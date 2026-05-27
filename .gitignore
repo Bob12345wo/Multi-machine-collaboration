@@ -1,0 +1,20 @@
+# ROS/catkin generated files
+catkin_ws/build/
+catkin_ws/devel/
+catkin_ws/logs/
+catkin_ws/.catkin_tools/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Editor/system files
+.vscode/
+.idea/
+.claude/
+.DS_Store
+Thumbs.db
+
+# Runtime logs
+*.log
+*.bag

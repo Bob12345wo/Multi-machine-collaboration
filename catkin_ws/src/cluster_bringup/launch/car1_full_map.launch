@@ -1,0 +1,29 @@
+<launch>
+  <!-- Complete car1-side startup for shared-map formation. -->
+  <arg name="mode" default="teleop" />
+  <arg name="ros_ip" default="192.168.137.248" />
+  <arg name="lidar_port" default="/dev/ttyUSB0" />
+  <arg name="start_map_stack" default="true" />
+  <arg name="start_map_follower" default="false" />
+
+  <include file="$(find cluster_bringup)/launch/car1_no_lidar.launch">
+    <arg name="mode" value="$(arg mode)" />
+    <arg name="ros_ip" value="$(arg ros_ip)" />
+  </include>
+
+  <include file="$(find cluster_bringup)/launch/car1_lidar.launch">
+    <arg name="port_name" value="$(arg lidar_port)" />
+  </include>
+
+  <group if="$(arg start_map_stack)">
+    <include file="$(find cluster_bringup)/launch/namespaced_tf.launch" />
+    <include file="$(find cluster_bringup)/launch/multi_amcl.launch">
+      <arg name="robot1_scan" value="/robot1/scan" />
+      <arg name="robot2_scan" value="/robot2/scan" />
+    </include>
+  </group>
+
+  <group if="$(arg start_map_follower)">
+    <include file="$(find cluster_bringup)/launch/map_follower.launch" />
+  </group>
+</launch>

@@ -1,0 +1,21 @@
+<launch>
+  <!--
+    Create robot-specific TF frames from the namespaced odometry topics.
+
+    This is required before using shared-map formation, because the stock LIMO
+    TF frames are generic (odom/base_link) and collide in multi-robot mode.
+  -->
+  <node pkg="cluster_bringup" type="odom_tf_republisher.py"
+        name="robot1_odom_tf_republisher" output="screen">
+    <param name="odom_topic" value="/robot1/odom" />
+    <param name="odom_frame" value="robot1/odom" />
+    <param name="base_frame" value="robot1/base_link" />
+  </node>
+
+  <node pkg="cluster_bringup" type="odom_tf_republisher.py"
+        name="robot2_odom_tf_republisher" output="screen">
+    <param name="odom_topic" value="/robot2/odom" />
+    <param name="odom_frame" value="robot2/odom" />
+    <param name="base_frame" value="robot2/base_link" />
+  </node>
+</launch>

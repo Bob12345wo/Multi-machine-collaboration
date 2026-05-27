@@ -1,0 +1,20 @@
+<launch>
+  <!-- Start car1 LD14 lidar without ROS namespace side effects. -->
+  <arg name="port_name" default="/dev/ttyUSB0" />
+  <arg name="raw_scan" default="/robot1_raw_scan" />
+  <arg name="scan" default="/robot1/scan" />
+
+  <include file="$(find cluster_bringup)/launch/ld14_lidar.launch">
+    <arg name="port_name" value="$(arg port_name)" />
+    <arg name="topic_name" value="$(arg raw_scan)" />
+    <arg name="frame_id" value="base_laser" />
+    <arg name="node_name" value="robot1_ldlidar_publisher_ld14" />
+  </include>
+
+  <node pkg="cluster_bringup" type="scan_frame_republisher.py"
+        name="robot1_scan_frame_republisher" output="screen">
+    <param name="input_scan" value="$(arg raw_scan)" />
+    <param name="output_scan" value="$(arg scan)" />
+    <param name="frame_id" value="robot1/base_laser" />
+  </node>
+</launch>

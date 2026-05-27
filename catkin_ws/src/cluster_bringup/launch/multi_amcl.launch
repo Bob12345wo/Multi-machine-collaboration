@@ -1,0 +1,64 @@
+<launch>
+  <!--
+    Shared-map AMCL for two LIMO robots on one ROS master.
+
+    Prerequisites:
+      1. car1_bringup.launch and car2_bringup.launch are running.
+      2. namespaced_tf.launch is running and provides:
+           robot1/odom -> robot1/base_link
+           robot2/odom -> robot2/base_link
+      3. Each robot publishes a namespaced scan topic.
+  -->
+  <arg name="map_file" default="$(find limo_bringup)/maps/cluster_map.yaml" />
+  <arg name="robot1_scan" default="/robot1/scan" />
+  <arg name="robot2_scan" default="/robot2/scan" />
+  <arg name="robot1_initial_x" default="0.0" />
+  <arg name="robot1_initial_y" default="0.0" />
+  <arg name="robot1_initial_a" default="0.0" />
+  <arg name="robot2_initial_x" default="-0.8" />
+  <arg name="robot2_initial_y" default="0.0" />
+  <arg name="robot2_initial_a" default="0.0" />
+
+  <node pkg="map_server" type="map_server" name="map_server"
+        args="$(arg map_file)" output="screen">
+    <param name="frame_id" value="map" />
+  </node>
+
+  <!-- Sensor-frame TF for AMCL laser model. -->
+  <node pkg="tf" type="static_transform_publisher"
+        name="robot1_base_link_to_base_laser"
+        args="0.0 0.0 0.08 3.14 0.0 0.0 robot1/base_link robot1/base_laser 20" />
+  <node pkg="tf" type="static_transform_publisher"
+        name="robot2_base_link_to_base_laser"
+        args="0.0 0.0 0.08 3.14 0.0 0.0 robot2/base_link robot2/base_laser 20" />
+
+  <group ns="robot1">
+    <node pkg="amcl" type="amcl" name="amcl" output="screen">
+      <rosparam file="$(find limo_bringup)/param/amcl_params_diff.yaml" command="load" />
+      <param name="odom_frame_id" value="robot1/odom" />
+      <param name="base_frame_id" value="robot1/base_link" />
+      <param name="global_frame_id" value="map" />
+      <param name="initial_pose_x" value="$(arg robot1_initial_x)" />
+      <param name="initial_pose_y" value="$(arg robot1_initial_y)" />
+      <param name="initial_pose_a" value="$(arg robot1_initial_a)" />
+      <remap from="map" to="/map" />
+      <remap from="scan" to="$(arg robot1_scan)" />
+      <remap from="initialpose" to="/robot1/initialpose" />
+    </node>
+  </group>
+
+  <group ns="robot2">
+    <node pkg="amcl" type="amcl" name="amcl" output="screen">
+      <rosparam file="$(find limo_bringup)/param/amcl_params_diff.yaml" command="load" />
+      <param name="odom_frame_id" value="robot2/odom" />
+      <param name="base_frame_id" value="robot2/base_link" />
+      <param name="global_frame_id" value="map" />
+      <param name="initial_pose_x" value="$(arg robot2_initial_x)" />
+      <param name="initial_pose_y" value="$(arg robot2_initial_y)" />
+      <param name="initial_pose_a" value="$(arg robot2_initial_a)" />
+      <remap from="map" to="/map" />
+      <remap from="scan" to="$(arg robot2_scan)" />
+      <remap from="initialpose" to="/robot2/initialpose" />
+    </node>
+  </group>
+</launch>

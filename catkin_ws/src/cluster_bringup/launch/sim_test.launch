@@ -1,0 +1,44 @@
+<launch>
+  <!--
+    Single-machine simulation test.
+    Starts fake odometry for two robots + both controllers + keyboard teleop.
+    No real hardware needed.
+  -->
+
+  <!-- Fake odometry for /robot1 (leader) -->
+  <node pkg="cluster_bringup" type="fake_odom_publisher.py"
+        name="fake_odom_robot1" ns="robot1" output="screen">
+    <param name="initial_x" value="0.0" />
+    <param name="initial_y" value="0.0" />
+    <param name="initial_theta" value="0.0" />
+    <param name="rate" value="50.0" />
+  </node>
+
+  <!-- Fake odometry for /robot2 (follower), starts behind leader -->
+  <node pkg="cluster_bringup" type="fake_odom_publisher.py"
+        name="fake_odom_robot2" ns="robot2" output="screen">
+    <param name="initial_x" value="-0.8" />
+    <param name="initial_y" value="0.0" />
+    <param name="initial_theta" value="0.0" />
+    <param name="rate" value="50.0" />
+  </node>
+
+  <!-- Leader controller -->
+  <node pkg="cluster_formation" type="leader_controller_node"
+        name="leader_controller" ns="robot1" output="screen">
+    <rosparam file="$(find cluster_bringup)/config/formation_params.yaml" />
+  </node>
+
+  <!-- Follower controller -->
+  <node pkg="cluster_following" type="follower_controller_node"
+        name="follower_controller" ns="robot2" output="screen">
+    <rosparam file="$(find cluster_bringup)/config/follower_params.yaml" />
+  </node>
+
+  <!-- Keyboard teleop for leader -->
+  <node pkg="cluster_bringup" type="teleop_keyboard.py"
+        name="teleop_keyboard" ns="robot1" output="screen">
+    <param name="speed" value="0.3" />
+    <param name="turn" value="0.5" />
+  </node>
+</launch>

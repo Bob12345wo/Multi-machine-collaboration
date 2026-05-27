@@ -1,0 +1,4 @@
+<launch>
+  <!-- Start only the map-frame follower after AMCL localization is verified. -->
+  <include file="$(find cluster_bringup)/launch/map_follower.launch" />
+</launch>

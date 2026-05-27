@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>cluster_bringup</name>
+  <version>0.1.0</version>
+  <description>Launch files, configs, and scripts for LIMO S2 cluster control system</description>
+  <maintainer email="user@example.com">user</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <exec_depend>roscpp</exec_depend>
+  <exec_depend>rospy</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>tf2</exec_depend>
+  <exec_depend>cluster_msgs</exec_depend>
+  <exec_depend>cluster_common</exec_depend>
+  <exec_depend>cluster_formation</exec_depend>
+  <exec_depend>cluster_following</exec_depend>
+  <exec_depend>limo_base</exec_depend>
+  <exec_depend>limo_bringup</exec_depend>
+</package>

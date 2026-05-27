@@ -1,0 +1,59 @@
+<launch>
+  <!--
+    Car1 (Leader) bringup.
+    Starts limo_base driver + leader controller on the leader car.
+
+    Usage:
+      roslaunch cluster_bringup car1_bringup.launch
+
+    Prerequisite: source setup_network.sh first, or pass ros_ip explicitly:
+      roslaunch cluster_bringup car1_bringup.launch ros_ip:=192.168.137.248
+  -->
+  <arg name="mode" default="teleop" />
+  <arg name="ros_ip" default="192.168.137.248" />
+  <arg name="base_port" default="ttyTHS1" />
+  <arg name="lidar_port" default="/dev/ttyUSB1" />
+
+  <!-- Set ROS_IP for all child nodes so cross-vehicle TCP works -->
+  <env name="ROS_IP" value="$(arg ros_ip)" />
+
+  <!-- Run everything in robot1 namespace -->
+  <group ns="robot1">
+    <!-- Odometry fusion, same as limo_start.launch -->
+    <node pkg="robot_pose_ekf" name="robot_pose_ekf" type="robot_pose_ekf">
+      <param name="output_frame" value="odom" />
+      <param name="base_footprint_frame" value="base_link" />
+    </node>
+
+    <!-- LIMO S2 base driver -->
+    <include file="$(find limo_base)/launch/limo_base.launch">
+      <arg name="port_name" value="$(arg base_port)" />
+      <arg name="use_mcnamu" value="false" />
+      <arg name="pub_odom_tf" value="false" />
+    </include>
+
+    <!-- LD14 lidar with explicit per-car port -->
+    <include file="$(find cluster_bringup)/launch/ld14_lidar.launch">
+      <arg name="port_name" value="$(arg lidar_port)" />
+      <arg name="topic_name" value="scan" />
+      <arg name="frame_id" value="base_laser" />
+    </include>
+
+    <node pkg="tf" type="static_transform_publisher"
+          name="base_link_to_camera_link"
+          args="0.105 0 0.1 0.0 0.0 0.0 base_link camera_link 10" />
+    <node pkg="tf" type="static_transform_publisher"
+          name="base_link_to_imu_link"
+          args="0.0 0.0 0.0 0.0 0.0 0.0 base_link imu_link 10" />
+    <node pkg="tf" type="static_transform_publisher"
+          name="base_link_to_lidar_frame"
+          args="0.0 0.0 0.08 3.14 0.0 0.0 base_link base_laser 10" />
+
+    <!-- Leader controller -->
+    <node pkg="cluster_formation" type="leader_controller_node"
+          name="leader_controller" output="screen">
+      <rosparam file="$(find cluster_bringup)/config/formation_params.yaml" />
+      <param name="initial_mode" value="$(arg mode)" />
+    </node>
+  </group>
+</launch>

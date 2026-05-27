@@ -1,0 +1,15 @@
+<launch>
+  <!-- Complete car2-side startup for shared-map formation. -->
+  <arg name="ros_ip" default="192.168.137.133" />
+  <arg name="lidar_port" default="/dev/ttyUSB0" />
+  <arg name="start_old_follower" default="false" />
+
+  <include file="$(find cluster_bringup)/launch/car2_no_lidar.launch">
+    <arg name="ros_ip" value="$(arg ros_ip)" />
+    <arg name="start_old_follower" value="$(arg start_old_follower)" />
+  </include>
+
+  <include file="$(find cluster_bringup)/launch/car2_lidar.launch">
+    <arg name="port_name" value="$(arg lidar_port)" />
+  </include>
+</launch>

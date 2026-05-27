@@ -1,0 +1,9 @@
+# Switch system mode
+uint8 mode              # 0=IDLE, 1=TELEOP, 2=FORMATION, 3=FOLLOW
+uint8 formation         # formation type (only used if mode==FORMATION)
+float64 offset_x        # custom offset (if non-zero overrides preset)
+float64 offset_y
+float64 offset_yaw
+---
+bool success
+string message

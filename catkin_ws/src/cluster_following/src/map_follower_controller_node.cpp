@@ -1,0 +1,296 @@
+#include <algorithm>
+#include <cmath>
+#include <string>
+
+#include <ros/ros.h>
+#include <geometry_msgs/Twist.h>
+#include <geometry_msgs/TransformStamped.h>
+#include <tf2/utils.h>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.h>
+#include <tf2_ros/buffer.h>
+#include <tf2_ros/transform_listener.h>
+
+#include "cluster_common/pose_utils.h"
+#include "cluster_msgs/LeaderCmd.h"
+
+class MapFollowerController {
+public:
+  MapFollowerController() : pnh_("~"), tf_listener_(tf_buffer_) {
+    pnh_.param<std::string>("map_frame", map_frame_, "map");
+    pnh_.param<std::string>("leader_frame", leader_frame_, "robot1/base_link");
+    pnh_.param<std::string>("follower_frame", follower_frame_, "robot2/base_link");
+    pnh_.param<std::string>("cmd_vel_topic", cmd_vel_topic_, "/robot2/cmd_vel");
+    pnh_.param<std::string>("control_mode", control_mode_, "wheeltec_global");
+    pnh_.param("use_leader_offsets", use_leader_offsets_, true);
+    pnh_.param("offset_x", offset_x_, -0.8);
+    pnh_.param("offset_y", offset_y_, 0.0);
+    pnh_.param("loop_rate", loop_rate_, 20.0);
+    pnh_.param("max_linear_speed", max_linear_speed_, 0.6);
+    pnh_.param("max_angular_speed", max_angular_speed_, 0.8);
+    pnh_.param("min_linear_speed", min_linear_speed_, 0.05);
+    pnh_.param("min_angular_speed", min_angular_speed_, 0.05);
+    pnh_.param("pos_deadband", pos_deadband_, 0.05);
+    pnh_.param("yaw_deadband", yaw_deadband_, 0.08);
+    pnh_.param("k_v", k_v_, 0.9);
+    pnh_.param("k_l", k_l_, 0.8);
+    pnh_.param("k_a", k_a_, 0.7);
+    pnh_.param("k_heading", k_heading_, 1.0);
+    pnh_.param("leader_vx_gain", leader_vx_gain_, 1.0);
+    pnh_.param("leader_wz_gain", leader_wz_gain_, 0.35);
+    pnh_.param("target_filter_alpha", target_filter_alpha_, 0.35);
+    pnh_.param("cmd_filter_alpha", cmd_filter_alpha_, 0.45);
+    pnh_.param("heading_lookahead", heading_lookahead_, 0.45);
+    pnh_.param("max_target_jump", max_target_jump_, 0.8);
+    pnh_.param("yaw_priority_threshold", yaw_priority_threshold_, 0.26);
+    pnh_.param("turn_in_place_wz_threshold", turn_in_place_wz_threshold_, 0.18);
+    pnh_.param("max_turn_linear_speed", max_turn_linear_speed_, 0.08);
+    pnh_.param("yaw_priority_vx_scale", yaw_priority_vx_scale_, 0.25);
+    pnh_.param("turn_radius_compensation", turn_radius_compensation_, true);
+    pnh_.param("allow_reverse_while_leader_forward", allow_reverse_while_leader_forward_, false);
+
+    leader_cmd_sub_ = nh_.subscribe("/robot1/leader_cmd", 10,
+        &MapFollowerController::leaderCmdCallback, this);
+    cmd_vel_pub_ = nh_.advertise<geometry_msgs::Twist>(cmd_vel_topic_, 10);
+
+    control_timer_ = nh_.createTimer(ros::Duration(1.0 / loop_rate_),
+        &MapFollowerController::controlLoop, this);
+  }
+
+private:
+  struct Pose2D {
+    double x;
+    double y;
+    double yaw;
+  };
+
+  void leaderCmdCallback(const cluster_msgs::LeaderCmd::ConstPtr& msg) {
+    latest_leader_cmd_ = *msg;
+    leader_cmd_received_ = true;
+    last_leader_cmd_time_ = ros::Time::now();
+  }
+
+  bool lookupPose(const std::string& frame, Pose2D& pose) {
+    try {
+      geometry_msgs::TransformStamped tf =
+          tf_buffer_.lookupTransform(map_frame_, frame, ros::Time(0),
+                                     ros::Duration(0.05));
+      pose.x = tf.transform.translation.x;
+      pose.y = tf.transform.translation.y;
+      pose.yaw = tf2::getYaw(tf.transform.rotation);
+      return true;
+    } catch (const tf2::TransformException& ex) {
+      ROS_WARN_THROTTLE(2.0, "TF lookup failed %s -> %s: %s",
+                        map_frame_.c_str(), frame.c_str(), ex.what());
+      return false;
+    }
+  }
+
+  void controlLoop(const ros::TimerEvent&) {
+    if (!leader_cmd_received_ ||
+        (ros::Time::now() - last_leader_cmd_time_).toSec() > 0.5 ||
+        latest_leader_cmd_.mode != cluster_msgs::LeaderCmd::MODE_FORMATION) {
+      stop();
+      return;
+    }
+
+    Pose2D leader;
+    Pose2D follower;
+    if (!lookupPose(leader_frame_, leader) || !lookupPose(follower_frame_, follower)) {
+      stop();
+      return;
+    }
+
+    double active_offset_x = offset_x_;
+    double active_offset_y = offset_y_;
+    if (use_leader_offsets_) {
+      active_offset_x = latest_leader_cmd_.offset_x;
+      active_offset_y = latest_leader_cmd_.offset_y;
+    }
+
+    if (!formation_anchor_initialized_ ||
+        latest_leader_cmd_.formation != last_formation_) {
+      formation_anchor_yaw_ = leader.yaw;
+      formation_anchor_initialized_ = true;
+      last_formation_ = latest_leader_cmd_.formation;
+      target_initialized_ = false;
+    }
+
+    const double cos_l = std::cos(leader.yaw);
+    const double sin_l = std::sin(leader.yaw);
+    double target_x = leader.x + active_offset_x * cos_l - active_offset_y * sin_l;
+    double target_y = leader.y + active_offset_x * sin_l + active_offset_y * cos_l;
+    double target_yaw = leader.yaw;
+
+    const double leader_vx = latest_leader_cmd_.leader_vx;
+    const double leader_wz = latest_leader_cmd_.leader_vyaw;
+
+    if (control_mode_ == "wheeltec_global") {
+      const double cos_a = std::cos(formation_anchor_yaw_);
+      const double sin_a = std::sin(formation_anchor_yaw_);
+      target_x = leader.x + active_offset_x * cos_a - active_offset_y * sin_a;
+      target_y = leader.y + active_offset_x * sin_a + active_offset_y * cos_a;
+    } else if (turn_radius_compensation_ && std::fabs(leader_wz) > min_angular_speed_ &&
+        std::fabs(leader_vx) > min_linear_speed_) {
+      const double radius = leader_vx / leader_wz;
+      target_yaw = cluster_common::normalizeAngle(
+          leader.yaw + std::atan2(active_offset_y, active_offset_x + radius));
+    }
+
+    Pose2D raw_target{target_x, target_y, target_yaw};
+    Pose2D target = filterTarget(raw_target);
+
+    const double dx = target.x - follower.x;
+    const double dy = target.y - follower.y;
+    const double distance = std::sqrt(dx * dx + dy * dy);
+
+    const double cos_f = std::cos(follower.yaw);
+    const double sin_f = std::sin(follower.yaw);
+    const double forward_err = dx * cos_f + dy * sin_f;
+    const double lateral_err = -dx * sin_f + dy * cos_f;
+    const double yaw_err = cluster_common::normalizeAngle(target.yaw - follower.yaw);
+    const double heading_err = std::atan2(lateral_err,
+        std::max(std::fabs(forward_err), heading_lookahead_));
+
+    if (distance < pos_deadband_ && std::fabs(yaw_err) < yaw_deadband_ &&
+        std::fabs(leader_vx) < min_linear_speed_ &&
+        std::fabs(leader_wz) < min_angular_speed_) {
+      stop();
+      return;
+    }
+
+    double vx = 0.0;
+    double wz = 0.0;
+    if (control_mode_ == "wheeltec_global") {
+      vx = leader_vx_gain_ * leader_vx + k_v_ * forward_err;
+      wz = leader_wz_gain_ * leader_wz +
+          0.5 * k_l_ * lateral_err + k_a_ * std::sin(yaw_err);
+    } else {
+      vx = leader_vx_gain_ * leader_vx + k_v_ * forward_err;
+      wz = leader_wz_gain_ * leader_wz +
+          k_l_ * lateral_err + k_heading_ * heading_err + k_a_ * std::sin(yaw_err);
+
+      const bool leader_turning = std::fabs(leader_wz) > turn_in_place_wz_threshold_;
+      const bool yaw_priority = std::fabs(yaw_err) > yaw_priority_threshold_;
+      if (leader_turning || yaw_priority) {
+        vx *= yaw_priority_vx_scale_;
+        vx = cluster_common::clamp(vx, -max_turn_linear_speed_, max_turn_linear_speed_);
+      }
+    }
+
+    if (!allow_reverse_while_leader_forward_ &&
+        (leader_vx > min_linear_speed_ || std::fabs(leader_wz) > min_angular_speed_) &&
+        vx < 0.0) {
+      vx = 0.0;
+    }
+
+    vx = cluster_common::clamp(vx, -max_linear_speed_, max_linear_speed_);
+    wz = cluster_common::clamp(wz, -max_angular_speed_, max_angular_speed_);
+
+    if (std::fabs(vx) < min_linear_speed_) vx = 0.0;
+    if (std::fabs(wz) < min_angular_speed_) wz = 0.0;
+
+    geometry_msgs::Twist cmd = filterCommand(vx, wz);
+    cmd_vel_pub_.publish(cmd);
+  }
+
+  void stop() {
+    geometry_msgs::Twist cmd;
+    cmd_vel_pub_.publish(cmd);
+    last_cmd_ = cmd;
+  }
+
+  Pose2D filterTarget(const Pose2D& raw_target) {
+    const double alpha = cluster_common::clamp(target_filter_alpha_, 0.0, 1.0);
+
+    if (!target_initialized_) {
+      filtered_target_ = raw_target;
+      target_initialized_ = true;
+      return filtered_target_;
+    }
+
+    const double dx = raw_target.x - filtered_target_.x;
+    const double dy = raw_target.y - filtered_target_.y;
+    const double jump = std::sqrt(dx * dx + dy * dy);
+    if (jump > max_target_jump_) {
+      ROS_WARN_THROTTLE(1.0, "Target pose jumped %.2f m, holding filtered target", jump);
+      return filtered_target_;
+    }
+
+    filtered_target_.x = alpha * raw_target.x + (1.0 - alpha) * filtered_target_.x;
+    filtered_target_.y = alpha * raw_target.y + (1.0 - alpha) * filtered_target_.y;
+    filtered_target_.yaw = cluster_common::normalizeAngle(
+        filtered_target_.yaw +
+        alpha * cluster_common::normalizeAngle(raw_target.yaw - filtered_target_.yaw));
+
+    return filtered_target_;
+  }
+
+  geometry_msgs::Twist filterCommand(double vx, double wz) {
+    const double alpha = cluster_common::clamp(cmd_filter_alpha_, 0.0, 1.0);
+    geometry_msgs::Twist cmd;
+    cmd.linear.x = alpha * vx + (1.0 - alpha) * last_cmd_.linear.x;
+    cmd.angular.z = alpha * wz + (1.0 - alpha) * last_cmd_.angular.z;
+    if (std::fabs(cmd.linear.x) < min_linear_speed_) cmd.linear.x = 0.0;
+    if (std::fabs(cmd.angular.z) < min_angular_speed_) cmd.angular.z = 0.0;
+    last_cmd_ = cmd;
+    return cmd;
+  }
+
+  ros::NodeHandle nh_;
+  ros::NodeHandle pnh_;
+  ros::Subscriber leader_cmd_sub_;
+  ros::Publisher cmd_vel_pub_;
+  ros::Timer control_timer_;
+  tf2_ros::Buffer tf_buffer_;
+  tf2_ros::TransformListener tf_listener_;
+
+  cluster_msgs::LeaderCmd latest_leader_cmd_;
+  bool leader_cmd_received_{false};
+  ros::Time last_leader_cmd_time_;
+
+  std::string map_frame_;
+  std::string leader_frame_;
+  std::string follower_frame_;
+  std::string cmd_vel_topic_;
+  std::string control_mode_;
+
+  double offset_x_;
+  double offset_y_;
+  double loop_rate_;
+  double max_linear_speed_;
+  double max_angular_speed_;
+  double min_linear_speed_;
+  double min_angular_speed_;
+  double pos_deadband_;
+  double yaw_deadband_;
+  double k_v_;
+  double k_l_;
+  double k_a_;
+  double k_heading_;
+  double leader_vx_gain_;
+  double leader_wz_gain_;
+  double target_filter_alpha_;
+  double cmd_filter_alpha_;
+  double heading_lookahead_;
+  double max_target_jump_;
+  double yaw_priority_threshold_;
+  double turn_in_place_wz_threshold_;
+  double max_turn_linear_speed_;
+  double yaw_priority_vx_scale_;
+  bool turn_radius_compensation_;
+  bool allow_reverse_while_leader_forward_;
+  bool use_leader_offsets_;
+  bool target_initialized_{false};
+  bool formation_anchor_initialized_{false};
+  uint8_t last_formation_{255};
+  double formation_anchor_yaw_{0.0};
+  Pose2D filtered_target_{0.0, 0.0, 0.0};
+  geometry_msgs::Twist last_cmd_;
+};
+
+int main(int argc, char** argv) {
+  ros::init(argc, argv, "map_follower_controller");
+  MapFollowerController controller;
+  ros::spin();
+  return 0;
+}

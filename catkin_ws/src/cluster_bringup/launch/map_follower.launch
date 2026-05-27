@@ -1,0 +1,12 @@
+<launch>
+  <!--
+    Shared-map follower controller.
+
+    Use this instead of follower_controller_node after both robots are localized
+    in the same /map frame by AMCL/SLAM.
+  -->
+  <node pkg="cluster_following" type="map_follower_controller_node"
+        name="map_follower_controller" output="screen">
+    <rosparam file="$(find cluster_bringup)/config/map_follower_params.yaml" />
+  </node>
+</launch>

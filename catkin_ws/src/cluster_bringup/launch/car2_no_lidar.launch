@@ -1,0 +1,36 @@
+<launch>
+  <arg name="ros_ip" default="192.168.137.133" />
+  <arg name="base_port" default="ttyTHS1" />
+  <arg name="start_old_follower" default="false" />
+
+  <env name="ROS_IP" value="$(arg ros_ip)" />
+
+  <group ns="robot2">
+    <node pkg="robot_pose_ekf" name="robot_pose_ekf" type="robot_pose_ekf">
+      <param name="output_frame" value="odom" />
+      <param name="base_footprint_frame" value="base_link" />
+    </node>
+
+    <include file="$(find limo_base)/launch/limo_base.launch">
+      <arg name="port_name" value="$(arg base_port)" />
+      <arg name="use_mcnamu" value="false" />
+      <arg name="pub_odom_tf" value="false" />
+    </include>
+
+    <node pkg="tf" type="static_transform_publisher"
+          name="base_link_to_camera_link"
+          args="0.105 0 0.1 0.0 0.0 0.0 base_link camera_link 10" />
+    <node pkg="tf" type="static_transform_publisher"
+          name="base_link_to_imu_link"
+          args="0.0 0.0 0.0 0.0 0.0 0.0 base_link imu_link 10" />
+    <node pkg="tf" type="static_transform_publisher"
+          name="base_link_to_lidar_frame"
+          args="0.0 0.0 0.08 3.14 0.0 0.0 base_link base_laser 10" />
+
+    <node if="$(arg start_old_follower)"
+          pkg="cluster_following" type="follower_controller_node"
+          name="follower_controller" output="screen">
+      <rosparam file="$(find cluster_bringup)/config/follower_params.yaml" />
+    </node>
+  </group>
+</launch>

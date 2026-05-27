@@ -1,0 +1,45 @@
+<launch>
+  <!--
+    Full two-car cluster system launch.
+    Run this on Car1. It starts Car1 nodes locally and Car2 nodes remotely via SSH.
+
+    Prerequisites:
+      1. Both cars on same WiFi network with static IPs
+      2. SSH key exchange between cars (no password)
+      3. setup_network.sh sourced on both cars before launching
+
+    Usage:
+      roslaunch cluster_bringup cluster_system.launch mode:=formation
+  -->
+  <arg name="mode" default="formation" />
+  <arg name="car2_ip" default="192.168.1.102" />
+  <arg name="car2_user" default="agilex" />
+
+  <!-- ========== Car1 (Leader, local) ========== -->
+  <group ns="robot1">
+    <include file="$(find limo_bringup)/launch/limo_start.launch">
+      <arg name="pub_odom_tf" value="false" />
+    </include>
+
+    <node pkg="cluster_formation" type="leader_controller_node"
+          name="leader_controller" output="screen">
+      <rosparam file="$(find cluster_bringup)/config/formation_params.yaml" />
+      <param name="initial_mode" value="$(arg mode)" />
+    </node>
+  </group>
+
+  <!-- ========== Car2 (Follower, remote) ========== -->
+  <machine name="car2" address="$(arg car2_ip)"
+           user="$(arg car2_user)"
+           env-loader="$(find cluster_bringup)/scripts/setup_network.sh" />
+
+  <group ns="robot2">
+    <node machine="car2" pkg="limo_bringup" type="limo_start.launch"
+          name="limo_start" />
+
+    <node machine="car2" pkg="cluster_following" type="follower_controller_node"
+          name="follower_controller" output="screen">
+      <rosparam file="$(find cluster_bringup)/config/follower_params.yaml" />
+    </node>
+  </group>
+</launch>

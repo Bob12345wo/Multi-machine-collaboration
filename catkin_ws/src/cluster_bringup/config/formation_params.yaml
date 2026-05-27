@@ -1,0 +1,10 @@
+# Parameters for leader_controller node (loaded under ~ namespace)
+loop_rate: 20
+max_linear_speed: 0.8
+max_angular_speed: 1.0
+
+# Safety
+follower_lost_timeout: 3.0
+max_formation_error: 2.0
+max_error_duration: 5.0
+speed_limit: 0.6

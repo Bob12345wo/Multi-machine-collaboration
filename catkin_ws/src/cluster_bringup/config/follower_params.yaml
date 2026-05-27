@@ -1,0 +1,39 @@
+# Parameters for follower_controller node (loaded under ~ namespace)
+loop_rate: 20
+max_linear_speed: 0.8
+max_angular_speed: 1.0
+
+# Safety
+leader_lost_timeout: 2.0
+pos_deadband: 0.05
+yaw_deadband: 0.05
+min_linear_speed: 0.08
+reverse_entry_distance: 0.10
+leader_vx_feedforward_gain: 0.85
+leader_wz_feedforward_gain: 1.0
+yaw_error_gain: 0.9
+lateral_error_gain: 0.25
+turn_yaw_correction_scale: 0.15
+turn_lateral_correction_scale: 0.5
+turn_in_place_threshold: 0.05
+allow_reverse_while_leader_forward: false
+
+# Linear PID
+linear_pid:
+  kp: 0.9
+  ki: 0.01
+  kd: 0.12
+  i_max: 0.1
+  output_max: 0.8
+
+# Angular PID
+angular_pid:
+  kp: 0.8
+  ki: 0.0
+  kd: 0.4
+  i_max: 0.05
+  output_max: 1.0
+
+# Following mode
+follow_delay_seconds: 2.0
+max_buffer_size: 500

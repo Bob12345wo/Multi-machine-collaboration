@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>cluster_following</name>
+  <version>0.1.0</version>
+  <description>Follower controller: PID tracking for formation, trajectory buffer for following</description>
+  <maintainer email="user@example.com">user</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>roscpp</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>tf2</depend>
+  <depend>tf2_ros</depend>
+  <depend>tf2_geometry_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>cluster_msgs</depend>
+  <depend>cluster_common</depend>
+  <depend>dynamic_reconfigure</depend>
+</package>
