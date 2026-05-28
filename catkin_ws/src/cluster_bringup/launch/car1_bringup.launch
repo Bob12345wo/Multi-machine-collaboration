@@ -28,7 +28,7 @@
     <!-- LIMO S2 base driver -->
     <include file="$(find limo_base)/launch/limo_base.launch">
       <arg name="port_name" value="$(arg base_port)" />
-      <arg name="use_mcnamu" value="false" />
+      <arg name="use_mcnamu" value="true" />
       <arg name="pub_odom_tf" value="false" />
     </include>
 

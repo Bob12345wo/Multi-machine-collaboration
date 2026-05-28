@@ -12,6 +12,8 @@ __pycache__/
 .vscode/
 .idea/
 .claude/
+agilex_car1_src/
+agilex_car2_src/
 .DS_Store
 Thumbs.db
 

@@ -80,7 +80,8 @@ space  stop
 - `cluster_map.yaml` and `cluster_map.pgm` should be stored in `~/agilex_ws/src/limo_ros/limo_bringup/maps/` on car1.
 - If lidar has no data, try switching the startup script argument between `/dev/ttyUSB0` and `/dev/ttyUSB1`.
 - The current follower mode is configured in `catkin_ws/src/cluster_bringup/config/map_follower_params.yaml`.
-- `control_mode: wheeltec_global` is the recommended mode for stable two-car testing.
+- `control_mode: body_orbit` keeps robot2 in the leader body frame, so side and triangle formations rotate with car1.
+- `cmd_safety_filter_params.yaml` configures the robot2 lidar safety filter between `/robot2/cmd_vel_raw` and `/robot2/cmd_vel`.
 
 ## Build
 

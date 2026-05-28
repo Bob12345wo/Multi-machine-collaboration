@@ -1,0 +1,32 @@
+# Safety filter for robot2 command velocity.
+# Input is the formation controller command. Output goes to the real base.
+input_cmd_topic: /robot2/cmd_vel_raw
+output_cmd_topic: /robot2/cmd_vel
+scan_topic: /robot2/scan
+
+loop_rate: 20
+cmd_timeout: 0.5
+scan_timeout: 0.7
+
+# Distances in meters.
+safe_distance: 0.65
+danger_distance: 0.35
+obstacle_min_valid_range: 0.05
+front_overhang_distance: 0.30
+
+# Scan sector in radians. If the front sector appears reversed in RViz,
+# set front_angle_center to 0.0.
+front_angle_center: 3.1416
+front_sector: 1.4
+
+# Speed limits after filtering.
+max_linear_speed: 0.6
+max_angular_speed: 0.8
+min_linear_speed: 0.05
+min_angular_speed: 0.05
+min_avoid_linear_speed: 0.08
+
+# Avoidance gains.
+slowdown_gain: 1.0
+turn_gain: 0.35
+danger_reverse_speed: -0.06

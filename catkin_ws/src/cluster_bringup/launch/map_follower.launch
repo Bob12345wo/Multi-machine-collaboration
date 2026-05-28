@@ -5,8 +5,25 @@
     Use this instead of follower_controller_node after both robots are localized
     in the same /map frame by AMCL/SLAM.
   -->
-  <node pkg="cluster_following" type="map_follower_controller_node"
+  <arg name="enable_avoidance" default="false" />
+
+  <node unless="$(arg enable_avoidance)"
+        pkg="cluster_following" type="map_follower_controller_node"
         name="map_follower_controller" output="screen">
     <rosparam file="$(find cluster_bringup)/config/map_follower_params.yaml" />
+    <param name="cmd_vel_topic" value="/robot2/cmd_vel" />
+  </node>
+
+  <node if="$(arg enable_avoidance)"
+        pkg="cluster_following" type="map_follower_controller_node"
+        name="map_follower_controller" output="screen">
+    <rosparam file="$(find cluster_bringup)/config/map_follower_params.yaml" />
+    <param name="cmd_vel_topic" value="/robot2/cmd_vel_raw" />
+  </node>
+
+  <node if="$(arg enable_avoidance)"
+        pkg="cluster_following" type="cmd_safety_filter_node"
+        name="robot2_cmd_safety_filter" output="screen">
+    <rosparam file="$(find cluster_bringup)/config/cmd_safety_filter_params.yaml" />
   </node>
 </launch>

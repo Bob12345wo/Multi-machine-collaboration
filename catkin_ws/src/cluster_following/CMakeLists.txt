@@ -5,6 +5,7 @@ find_package(catkin REQUIRED COMPONENTS
   roscpp
   geometry_msgs
   nav_msgs
+  sensor_msgs
   tf2
   tf2_ros
   tf2_geometry_msgs
@@ -25,6 +26,7 @@ catkin_package(
     roscpp
     geometry_msgs
     nav_msgs
+    sensor_msgs
     tf2
     tf2_ros
     tf2_geometry_msgs
@@ -63,6 +65,20 @@ target_link_libraries(map_follower_controller_node
 )
 
 add_dependencies(map_follower_controller_node
+  ${catkin_EXPORTED_TARGETS}
+  ${${PROJECT_NAME}_EXPORTED_TARGETS}
+)
+
+add_executable(cmd_safety_filter_node
+  src/cmd_safety_filter_node.cpp
+)
+
+target_link_libraries(cmd_safety_filter_node
+  cluster_common
+  ${catkin_LIBRARIES}
+)
+
+add_dependencies(cmd_safety_filter_node
   ${catkin_EXPORTED_TARGETS}
   ${${PROJECT_NAME}_EXPORTED_TARGETS}
 )

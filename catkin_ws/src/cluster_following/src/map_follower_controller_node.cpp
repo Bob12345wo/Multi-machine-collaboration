@@ -22,7 +22,7 @@ public:
     pnh_.param<std::string>("cmd_vel_topic", cmd_vel_topic_, "/robot2/cmd_vel");
     pnh_.param<std::string>("control_mode", control_mode_, "body_orbit");
     pnh_.param("use_leader_offsets", use_leader_offsets_, true);
-    pnh_.param("offset_x", offset_x_, -0.5);
+    pnh_.param("offset_x", offset_x_, -0.8);
     pnh_.param("offset_y", offset_y_, 0.0);
     pnh_.param("loop_rate", loop_rate_, 20.0);
     pnh_.param("max_linear_speed", max_linear_speed_, 0.6);
