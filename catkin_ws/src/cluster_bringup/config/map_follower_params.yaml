@@ -6,14 +6,14 @@ map_frame: map
 leader_frame: robot1/base_link
 follower_frame: robot2/base_link
 cmd_vel_topic: /robot2/cmd_vel
-control_mode: wheeltec_global
+control_mode: body_orbit
 use_leader_offsets: true
 
 # Desired follower position in leader body frame.
-# wheeltec_global uses this as a fixed map-frame offset after AMCL initialization.
-# If both cars start facing map +X, -0.8 means robot2 stays about 0.8 m behind robot1.
-# body_trailing uses this in the leader body frame.
-offset_x: -0.8
+# body_orbit uses the leader body frame: X forward, Y left.
+# COLUMN: x=-0.5 y=0.0 means robot2 follows behind car1.
+# LINE: x=0.0 y=-0.5 means robot2 stays on car1's right side.
+offset_x: -0.5
 offset_y: 0.0
 
 loop_rate: 20
@@ -26,18 +26,26 @@ yaw_deadband: 0.08
 
 # Gains equivalent to wheeltec_multi k_v/k_l/k_a, adapted for LIMO.
 k_v: 0.9
-k_l: 0.55
-k_a: 0.9
-k_heading: 0.9
+k_l: 0.5
+k_a: 1.35
+k_heading: 0.65
+k_approach_heading: 1.4
 leader_vx_gain: 1.0
 leader_wz_gain: 0.8
+orbit_v_gain: 0.8
 target_filter_alpha: 0.35
 cmd_filter_alpha: 0.45
 heading_lookahead: 0.45
 max_target_jump: 0.8
-yaw_priority_threshold: 0.38
-turn_in_place_wz_threshold: 0.35
-max_turn_linear_speed: 0.16
-yaw_priority_vx_scale: 0.45
-turn_radius_compensation: true
+final_align_distance: 0.6
+static_position_tolerance: 0.12
+static_leader_v_threshold: 0.04
+static_leader_w_threshold: 0.04
+approach_heading_limit: 0.9
+yaw_priority_threshold: 0.55
+turn_in_place_wz_threshold: 0.6
+max_turn_linear_speed: 0.28
+yaw_priority_vx_scale: 0.75
+turn_radius_compensation: false
 allow_reverse_while_leader_forward: false
+allow_orbit_reverse: true

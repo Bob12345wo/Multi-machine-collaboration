@@ -20,9 +20,9 @@ public:
     pnh_.param<std::string>("leader_frame", leader_frame_, "robot1/base_link");
     pnh_.param<std::string>("follower_frame", follower_frame_, "robot2/base_link");
     pnh_.param<std::string>("cmd_vel_topic", cmd_vel_topic_, "/robot2/cmd_vel");
-    pnh_.param<std::string>("control_mode", control_mode_, "wheeltec_global");
+    pnh_.param<std::string>("control_mode", control_mode_, "body_orbit");
     pnh_.param("use_leader_offsets", use_leader_offsets_, true);
-    pnh_.param("offset_x", offset_x_, -0.8);
+    pnh_.param("offset_x", offset_x_, -0.5);
     pnh_.param("offset_y", offset_y_, 0.0);
     pnh_.param("loop_rate", loop_rate_, 20.0);
     pnh_.param("max_linear_speed", max_linear_speed_, 0.6);
@@ -35,18 +35,26 @@ public:
     pnh_.param("k_l", k_l_, 0.8);
     pnh_.param("k_a", k_a_, 0.7);
     pnh_.param("k_heading", k_heading_, 1.0);
+    pnh_.param("k_approach_heading", k_approach_heading_, 1.4);
     pnh_.param("leader_vx_gain", leader_vx_gain_, 1.0);
-    pnh_.param("leader_wz_gain", leader_wz_gain_, 0.35);
+    pnh_.param("leader_wz_gain", leader_wz_gain_, 0.8);
+    pnh_.param("orbit_v_gain", orbit_v_gain_, 0.8);
     pnh_.param("target_filter_alpha", target_filter_alpha_, 0.35);
     pnh_.param("cmd_filter_alpha", cmd_filter_alpha_, 0.45);
     pnh_.param("heading_lookahead", heading_lookahead_, 0.45);
     pnh_.param("max_target_jump", max_target_jump_, 0.8);
+    pnh_.param("final_align_distance", final_align_distance_, 0.35);
+    pnh_.param("static_position_tolerance", static_position_tolerance_, 0.12);
+    pnh_.param("static_leader_v_threshold", static_leader_v_threshold_, 0.04);
+    pnh_.param("static_leader_w_threshold", static_leader_w_threshold_, 0.04);
+    pnh_.param("approach_heading_limit", approach_heading_limit_, 0.9);
     pnh_.param("yaw_priority_threshold", yaw_priority_threshold_, 0.26);
     pnh_.param("turn_in_place_wz_threshold", turn_in_place_wz_threshold_, 0.18);
     pnh_.param("max_turn_linear_speed", max_turn_linear_speed_, 0.08);
     pnh_.param("yaw_priority_vx_scale", yaw_priority_vx_scale_, 0.25);
     pnh_.param("turn_radius_compensation", turn_radius_compensation_, true);
     pnh_.param("allow_reverse_while_leader_forward", allow_reverse_while_leader_forward_, false);
+    pnh_.param("allow_orbit_reverse", allow_orbit_reverse_, true);
 
     leader_cmd_sub_ = nh_.subscribe("/robot1/leader_cmd", 10,
         &MapFollowerController::leaderCmdCallback, this);
@@ -107,10 +115,10 @@ private:
       active_offset_y = latest_leader_cmd_.offset_y;
     }
 
-    if (!formation_anchor_initialized_ ||
-        latest_leader_cmd_.formation != last_formation_) {
-      formation_anchor_yaw_ = leader.yaw;
-      formation_anchor_initialized_ = true;
+    if (latest_leader_cmd_.formation != last_formation_) {
+      if (control_mode_ == "wheeltec_global") {
+        formation_anchor_yaw_ = leader.yaw;
+      }
       last_formation_ = latest_leader_cmd_.formation;
       target_initialized_ = false;
     }
@@ -129,7 +137,8 @@ private:
       const double sin_a = std::sin(formation_anchor_yaw_);
       target_x = leader.x + active_offset_x * cos_a - active_offset_y * sin_a;
       target_y = leader.y + active_offset_x * sin_a + active_offset_y * cos_a;
-    } else if (turn_radius_compensation_ && std::fabs(leader_wz) > min_angular_speed_ &&
+    } else if (control_mode_ != "body_orbit" &&
+        turn_radius_compensation_ && std::fabs(leader_wz) > min_angular_speed_ &&
         std::fabs(leader_vx) > min_linear_speed_) {
       const double radius = leader_vx / leader_wz;
       target_yaw = cluster_common::normalizeAngle(
@@ -150,6 +159,10 @@ private:
     const double yaw_err = cluster_common::normalizeAngle(target.yaw - follower.yaw);
     const double heading_err = std::atan2(lateral_err,
         std::max(std::fabs(forward_err), heading_lookahead_));
+    const double heading_weight = cluster_common::clamp(
+        (distance - pos_deadband_) /
+        std::max(final_align_distance_ - pos_deadband_, 0.01),
+        0.0, 1.0);
 
     if (distance < pos_deadband_ && std::fabs(yaw_err) < yaw_deadband_ &&
         std::fabs(leader_vx) < min_linear_speed_ &&
@@ -163,21 +176,58 @@ private:
     if (control_mode_ == "wheeltec_global") {
       vx = leader_vx_gain_ * leader_vx + k_v_ * forward_err;
       wz = leader_wz_gain_ * leader_wz +
-          0.5 * k_l_ * lateral_err + k_a_ * std::sin(yaw_err);
+          heading_weight * 0.5 * k_l_ * lateral_err +
+          k_a_ * std::sin(yaw_err);
     } else {
-      vx = leader_vx_gain_ * leader_vx + k_v_ * forward_err;
-      wz = leader_wz_gain_ * leader_wz +
-          k_l_ * lateral_err + k_heading_ * heading_err + k_a_ * std::sin(yaw_err);
+      const bool leader_static =
+          std::fabs(leader_vx) < static_leader_v_threshold_ &&
+          std::fabs(leader_wz) < static_leader_w_threshold_;
 
-      const bool leader_turning = std::fabs(leader_wz) > turn_in_place_wz_threshold_;
-      const bool yaw_priority = std::fabs(yaw_err) > yaw_priority_threshold_;
-      if (leader_turning || yaw_priority) {
-        vx *= yaw_priority_vx_scale_;
-        vx = cluster_common::clamp(vx, -max_turn_linear_speed_, max_turn_linear_speed_);
+      if (control_mode_ == "body_orbit" && leader_static) {
+        if (distance <= static_position_tolerance_) {
+          vx = 0.0;
+          wz = k_a_ * std::sin(yaw_err);
+        } else {
+        const double target_heading = std::atan2(dy, dx);
+        const double approach_err =
+            cluster_common::normalizeAngle(target_heading - follower.yaw);
+        const double approach_speed_scale =
+            cluster_common::clamp(std::cos(approach_err), 0.0, 1.0);
+
+        vx = k_v_ * distance * approach_speed_scale;
+        if (std::fabs(approach_err) > approach_heading_limit_) {
+          vx = 0.0;
+        }
+        wz = k_approach_heading_ * approach_err;
+        }
+      } else {
+        double vx_ff = leader_vx_gain_ * leader_vx;
+        if (control_mode_ == "body_orbit") {
+        const double offset_map_x = active_offset_x * cos_l - active_offset_y * sin_l;
+        const double offset_map_y = active_offset_x * sin_l + active_offset_y * cos_l;
+        const double target_vel_x = leader_vx * cos_l - leader_wz * offset_map_y;
+        const double target_vel_y = leader_vx * sin_l + leader_wz * offset_map_x;
+        vx_ff = orbit_v_gain_ * (target_vel_x * cos_f + target_vel_y * sin_f);
+        }
+
+        vx = vx_ff + k_v_ * forward_err;
+        wz = leader_wz_gain_ * leader_wz +
+            heading_weight * k_l_ * lateral_err +
+            k_heading_ * heading_weight * heading_err +
+            k_a_ * std::sin(yaw_err);
+
+        const bool leader_turning = std::fabs(leader_wz) > turn_in_place_wz_threshold_;
+        const bool yaw_priority = std::fabs(yaw_err) > yaw_priority_threshold_;
+        if (leader_turning || yaw_priority) {
+          vx *= yaw_priority_vx_scale_;
+          vx = cluster_common::clamp(vx, -max_turn_linear_speed_, max_turn_linear_speed_);
+        }
       }
     }
 
-    if (!allow_reverse_while_leader_forward_ &&
+    const bool orbit_reverse_allowed = control_mode_ == "body_orbit" &&
+        allow_orbit_reverse_ && std::fabs(leader_wz) > min_angular_speed_;
+    if (!allow_reverse_while_leader_forward_ && !orbit_reverse_allowed &&
         (leader_vx > min_linear_speed_ || std::fabs(leader_wz) > min_angular_speed_) &&
         vx < 0.0) {
       vx = 0.0;
@@ -267,21 +317,28 @@ private:
   double k_l_;
   double k_a_;
   double k_heading_;
+  double k_approach_heading_;
   double leader_vx_gain_;
   double leader_wz_gain_;
+  double orbit_v_gain_;
   double target_filter_alpha_;
   double cmd_filter_alpha_;
   double heading_lookahead_;
   double max_target_jump_;
+  double final_align_distance_;
+  double static_position_tolerance_;
+  double static_leader_v_threshold_;
+  double static_leader_w_threshold_;
+  double approach_heading_limit_;
   double yaw_priority_threshold_;
   double turn_in_place_wz_threshold_;
   double max_turn_linear_speed_;
   double yaw_priority_vx_scale_;
   bool turn_radius_compensation_;
   bool allow_reverse_while_leader_forward_;
+  bool allow_orbit_reverse_;
   bool use_leader_offsets_;
   bool target_initialized_{false};
-  bool formation_anchor_initialized_{false};
   uint8_t last_formation_{255};
   double formation_anchor_yaw_{0.0};
   Pose2D filtered_target_{0.0, 0.0, 0.0};

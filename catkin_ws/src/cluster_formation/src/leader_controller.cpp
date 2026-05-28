@@ -311,19 +311,19 @@ FormationOffset LeaderController::getFormationOffset(uint8_t formation_type) {
   // Offsets in leader body frame: X=forward, Y=left
   switch (formation_type) {
     case cluster_msgs::LeaderCmd::FORMATION_COLUMN:
-      offset = {-0.8, 0.0, 0.0};
+      offset = {-0.5, 0.0, 0.0};
       break;
     case cluster_msgs::LeaderCmd::FORMATION_LINE:
-      offset = {0.0, -0.8, 0.0};
+      offset = {0.0, -0.5, 0.0};
       break;
     case cluster_msgs::LeaderCmd::FORMATION_TRIANGLE_LEFT:
-      offset = {-0.8, -0.8, 0.0};
+      offset = {-0.5, 0.5, 0.0};
       break;
     case cluster_msgs::LeaderCmd::FORMATION_TRIANGLE_RIGHT:
-      offset = {-0.8, 0.8, 0.0};
+      offset = {-0.5, -0.5, 0.0};
       break;
     default:
-      offset = {-0.8, 0.0, 0.0};
+      offset = {-0.5, 0.0, 0.0};
       break;
   }
   return offset;
