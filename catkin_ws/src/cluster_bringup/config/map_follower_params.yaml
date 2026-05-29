@@ -49,3 +49,14 @@ yaw_priority_vx_scale: 0.75
 turn_radius_compensation: false
 allow_reverse_while_leader_forward: false
 allow_orbit_reverse: true
+
+# Debug output for collision analysis. Disable after tuning.
+debug_enabled: true
+debug_period: 0.5
+
+# During static formation switches, avoid driving straight through car1.
+path_keepout_enabled: true
+path_keepout_radius: 0.70
+path_detour_radius: 0.85
+path_detour_step: 0.55
+path_detour_goal_tolerance: 0.18

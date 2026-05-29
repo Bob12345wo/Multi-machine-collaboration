@@ -1,4 +1,7 @@
 <launch>
   <!-- Start only the map-frame follower after AMCL localization is verified. -->
-  <include file="$(find cluster_bringup)/launch/map_follower.launch" />
+  <arg name="enable_avoidance" default="true" />
+  <include file="$(find cluster_bringup)/launch/map_follower.launch">
+    <arg name="enable_avoidance" value="$(arg enable_avoidance)" />
+  </include>
 </launch>

@@ -46,6 +46,8 @@ public:
     pnh_.param("robot_danger_distance", robot_danger_distance_, 0.50);
     pnh_.param("robot_slowdown_gain", robot_slowdown_gain_, 1.0);
     pnh_.param("robot_turn_gain", robot_turn_gain_, 0.0);
+    pnh_.param("debug_enabled", debug_enabled_, false);
+    pnh_.param("debug_period", debug_period_, 0.5);
 
     cmd_sub_ = nh_.subscribe(input_cmd_topic_, 10, &CmdSafetyFilter::cmdCallback, this);
     scan_sub_ = nh_.subscribe(scan_topic_, 10, &CmdSafetyFilter::scanCallback, this);
@@ -116,18 +118,35 @@ private:
     }
 
     cmd = latest_cmd_;
+    const double raw_vx = cmd.linear.x;
+    const double raw_wz = cmd.angular.z;
 
     const bool scan_fresh = scan_received_ &&
         (now - last_scan_time_).toSec() <= scan_timeout_;
     double obstacle_dist = 0.0;
     double obstacle_angle = 0.0;
+    double obstacle_clearance = 0.0;
+    bool obstacle_found = false;
+    bool lidar_applied = false;
     if (enabled_ && scan_fresh && cmd.linear.x > min_avoid_linear_speed_ &&
         closestObstacle(obstacle_dist, obstacle_angle)) {
-      const double clearance = obstacle_dist - front_overhang_distance_;
-      applyAvoidance(clearance, obstacle_angle, cmd);
+      obstacle_found = true;
+      obstacle_clearance = obstacle_dist - front_overhang_distance_;
+      lidar_applied = applyAvoidance(obstacle_clearance, obstacle_angle, cmd);
     }
+    const double after_lidar_vx = cmd.linear.x;
+    const double after_lidar_wz = cmd.angular.z;
+
+    bool robot_tf_ok = false;
+    bool robot_moving_toward = false;
+    bool robot_keepout_applied = false;
+    double robot_distance = 0.0;
+    double robot_forward = 0.0;
+    double robot_lateral = 0.0;
     if (enabled_ && robot_keepout_enabled_) {
-      applyRobotKeepout(cmd);
+      robot_keepout_applied = applyRobotKeepout(
+          cmd, robot_tf_ok, robot_distance, robot_forward,
+          robot_lateral, robot_moving_toward);
     }
 
     cmd.linear.x = cluster_common::clamp(cmd.linear.x,
@@ -136,11 +155,23 @@ private:
                                           -max_angular_speed_, max_angular_speed_);
     if (std::fabs(cmd.linear.x) < min_linear_speed_) cmd.linear.x = 0.0;
     if (std::fabs(cmd.angular.z) < min_angular_speed_) cmd.angular.z = 0.0;
+    if (debug_enabled_) {
+      ROS_INFO_THROTTLE(debug_period_,
+          "[SAFETY_DBG] en=%d raw(vx=%.3f,wz=%.3f) lidar(fresh=%d,found=%d,applied=%d,dist=%.3f,clear=%.3f,angle=%.3f,after_vx=%.3f,after_wz=%.3f) robot(tf=%d,dist=%.3f,front=%.3f,lat=%.3f,toward=%d,applied=%d,safe=%.2f,danger=%.2f) final(vx=%.3f,wz=%.3f)",
+          enabled_ ? 1 : 0, raw_vx, raw_wz,
+          scan_fresh ? 1 : 0, obstacle_found ? 1 : 0, lidar_applied ? 1 : 0,
+          obstacle_dist, obstacle_clearance, obstacle_angle,
+          after_lidar_vx, after_lidar_wz,
+          robot_tf_ok ? 1 : 0, robot_distance, robot_forward, robot_lateral,
+          robot_moving_toward ? 1 : 0, robot_keepout_applied ? 1 : 0,
+          robot_safe_distance_, robot_danger_distance_,
+          cmd.linear.x, cmd.angular.z);
+    }
     cmd_pub_.publish(cmd);
   }
 
-  void applyAvoidance(double clearance, double angle, geometry_msgs::Twist& cmd) const {
-    if (clearance >= safe_distance_) return;
+  bool applyAvoidance(double clearance, double angle, geometry_msgs::Twist& cmd) const {
+    if (clearance >= safe_distance_) return false;
 
     const double span = std::max(safe_distance_ - danger_distance_, 0.01);
     const double risk = cluster_common::clamp((safe_distance_ - clearance) / span, 0.0, 1.0);
@@ -151,34 +182,39 @@ private:
       cmd.angular.z += turn_dir * turn_gain_;
       ROS_WARN_THROTTLE(0.5, "Danger obstacle clearance %.2fm angle %.2f",
                         clearance, angle);
-      return;
+      return true;
     }
 
     if (cmd.linear.x > 0.0) {
       cmd.linear.x *= std::max(0.0, 1.0 - slowdown_gain_ * risk);
     }
     cmd.angular.z += turn_dir * turn_gain_ * risk;
+    return true;
   }
 
-  void applyRobotKeepout(geometry_msgs::Twist& cmd) {
+  bool applyRobotKeepout(geometry_msgs::Twist& cmd, bool& tf_ok,
+                         double& distance, double& forward, double& lateral,
+                         bool& moving_toward_leader) {
     geometry_msgs::TransformStamped leader_in_follower;
     try {
       leader_in_follower = tf_buffer_.lookupTransform(
           follower_frame_, leader_frame_, ros::Time(0), ros::Duration(0.02));
+      tf_ok = true;
     } catch (const tf2::TransformException& ex) {
       ROS_WARN_THROTTLE(2.0, "Robot keepout TF unavailable: %s", ex.what());
-      return;
+      tf_ok = false;
+      return false;
     }
 
-    const double forward = leader_in_follower.transform.translation.x;
-    const double lateral = leader_in_follower.transform.translation.y;
-    const double distance = std::hypot(forward, lateral);
-    if (distance >= robot_safe_distance_) return;
+    forward = leader_in_follower.transform.translation.x;
+    lateral = leader_in_follower.transform.translation.y;
+    distance = std::hypot(forward, lateral);
+    if (distance >= robot_safe_distance_) return false;
 
-    const bool moving_toward_leader =
+    moving_toward_leader =
         (cmd.linear.x > min_linear_speed_ && forward > 0.0) ||
         (cmd.linear.x < -min_linear_speed_ && forward < 0.0);
-    if (!moving_toward_leader) return;
+    if (!moving_toward_leader) return false;
 
     const double span = std::max(robot_safe_distance_ - robot_danger_distance_, 0.01);
     const double risk = cluster_common::clamp(
@@ -187,7 +223,7 @@ private:
       cmd.linear.x = 0.0;
       ROS_WARN_THROTTLE(0.5, "Robot keepout danger %.2fm, forward %.2f lateral %.2f",
                         distance, forward, lateral);
-      return;
+      return true;
     }
 
     cmd.linear.x *= std::max(0.0, 1.0 - robot_slowdown_gain_ * risk);
@@ -195,6 +231,7 @@ private:
       const double turn_dir = (lateral >= 0.0) ? -1.0 : 1.0;
       cmd.angular.z += turn_dir * robot_turn_gain_ * risk;
     }
+    return true;
   }
 
   ros::NodeHandle nh_;
@@ -243,6 +280,8 @@ private:
   double robot_danger_distance_;
   double robot_slowdown_gain_;
   double robot_turn_gain_;
+  bool debug_enabled_;
+  double debug_period_;
 };
 
 int main(int argc, char** argv) {

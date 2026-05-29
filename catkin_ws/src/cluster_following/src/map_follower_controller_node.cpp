@@ -59,6 +59,13 @@ public:
     pnh_.param("turn_radius_compensation", turn_radius_compensation_, true);
     pnh_.param("allow_reverse_while_leader_forward", allow_reverse_while_leader_forward_, false);
     pnh_.param("allow_orbit_reverse", allow_orbit_reverse_, true);
+    pnh_.param("debug_enabled", debug_enabled_, false);
+    pnh_.param("debug_period", debug_period_, 0.5);
+    pnh_.param("path_keepout_enabled", path_keepout_enabled_, true);
+    pnh_.param("path_keepout_radius", path_keepout_radius_, 0.70);
+    pnh_.param("path_detour_radius", path_detour_radius_, 0.85);
+    pnh_.param("path_detour_step", path_detour_step_, 0.55);
+    pnh_.param("path_detour_goal_tolerance", path_detour_goal_tolerance_, 0.18);
 
     leader_cmd_sub_ = nh_.subscribe("/robot1/leader_cmd", 10,
         &MapFollowerController::leaderCmdCallback, this);
@@ -184,7 +191,12 @@ private:
           leader.yaw + std::atan2(active_offset_y, active_offset_x + radius));
     }
 
-    Pose2D raw_target{target_x, target_y, target_yaw};
+    Pose2D final_target{target_x, target_y, target_yaw};
+    const bool leader_static_for_path =
+        std::fabs(leader_vx) < static_leader_v_threshold_ &&
+        std::fabs(leader_wz) < static_leader_w_threshold_;
+    Pose2D raw_target = applyPathKeepout(leader, follower, final_target,
+                                         leader_static_for_path);
     Pose2D target = filterTarget(raw_target);
 
     const double dx = target.x - follower.x;
@@ -282,6 +294,20 @@ private:
 
     geometry_msgs::Twist cmd = filterCommand(vx, wz);
     cmd_vel_pub_.publish(cmd);
+    if (debug_enabled_) {
+      ROS_INFO_THROTTLE(debug_period_,
+          "[FOLLOW_DBG] mode=%s form=%u offset(x=%.3f,y=%.3f) leader(x=%.3f,y=%.3f,yaw=%.3f,vx=%.3f,wz=%.3f) follower(x=%.3f,y=%.3f,yaw=%.3f) target(final_x=%.3f,final_y=%.3f,raw_x=%.3f,raw_y=%.3f,raw_yaw=%.3f,x=%.3f,y=%.3f,yaw=%.3f,detour=%d) err(fwd=%.3f,lat=%.3f,yaw=%.3f,dist=%.3f,heading=%.3f,weight=%.3f) cmd_raw(vx=%.3f,wz=%.3f) cmd_out(vx=%.3f,wz=%.3f)",
+          control_mode_.c_str(), latest_leader_cmd_.formation,
+          active_offset_x, active_offset_y,
+          leader.x, leader.y, leader.yaw, leader_vx, leader_wz,
+          follower.x, follower.y, follower.yaw,
+          final_target.x, final_target.y,
+          raw_target.x, raw_target.y, raw_target.yaw,
+          target.x, target.y, target.yaw,
+          path_detour_active_ ? 1 : 0,
+          forward_err, lateral_err, yaw_err, distance, heading_err, heading_weight,
+          vx, wz, cmd.linear.x, cmd.angular.z);
+    }
     publishStatus(cluster_msgs::FollowerStatus::STATE_TRACKING,
                   lateral_err, forward_err, yaw_err, distance, true);
   }
@@ -330,6 +356,67 @@ private:
         alpha * cluster_common::normalizeAngle(raw_target.yaw - filtered_target_.yaw));
 
     return filtered_target_;
+  }
+
+  Pose2D applyPathKeepout(const Pose2D& leader, const Pose2D& follower,
+                          const Pose2D& final_target, bool leader_static) {
+    if (!path_keepout_enabled_ || control_mode_ != "body_orbit" ||
+        !leader_static) {
+      path_detour_active_ = false;
+      return final_target;
+    }
+
+    const double target_dist = std::hypot(final_target.x - follower.x,
+                                          final_target.y - follower.y);
+    if (target_dist <= path_detour_goal_tolerance_) {
+      path_detour_active_ = false;
+      return final_target;
+    }
+
+    const double line_clearance = distancePointToSegment(
+        leader.x, leader.y, follower.x, follower.y,
+        final_target.x, final_target.y);
+    if (line_clearance >= path_keepout_radius_) {
+      path_detour_active_ = false;
+      return final_target;
+    }
+
+    const double from_angle = std::atan2(follower.y - leader.y,
+                                         follower.x - leader.x);
+    const double target_angle = std::atan2(final_target.y - leader.y,
+                                           final_target.x - leader.x);
+    const double delta = cluster_common::normalizeAngle(target_angle - from_angle);
+    const double step = cluster_common::clamp(delta, -path_detour_step_,
+                                             path_detour_step_);
+    const double detour_radius = std::max(path_detour_radius_, path_keepout_radius_);
+    Pose2D detour = final_target;
+    detour.x = leader.x + detour_radius * std::cos(from_angle + step);
+    detour.y = leader.y + detour_radius * std::sin(from_angle + step);
+
+    if (!path_detour_active_) {
+      ROS_WARN("Path keepout detour active: line_clearance=%.2f, target_dist=%.2f",
+               line_clearance, target_dist);
+    }
+    path_detour_active_ = true;
+    return detour;
+  }
+
+  static double distancePointToSegment(double px, double py,
+                                       double ax, double ay,
+                                       double bx, double by) {
+    const double abx = bx - ax;
+    const double aby = by - ay;
+    const double apx = px - ax;
+    const double apy = py - ay;
+    const double ab2 = abx * abx + aby * aby;
+    if (ab2 < 1e-9) {
+      return std::hypot(px - ax, py - ay);
+    }
+    const double t = cluster_common::clamp((apx * abx + apy * aby) / ab2,
+                                           0.0, 1.0);
+    const double cx = ax + t * abx;
+    const double cy = ay + t * aby;
+    return std::hypot(px - cx, py - cy);
   }
 
   geometry_msgs::Twist filterCommand(double vx, double wz) {
@@ -397,9 +484,17 @@ private:
   bool turn_radius_compensation_;
   bool allow_reverse_while_leader_forward_;
   bool allow_orbit_reverse_;
+  bool debug_enabled_;
+  double debug_period_;
+  bool path_keepout_enabled_;
+  double path_keepout_radius_;
+  double path_detour_radius_;
+  double path_detour_step_;
+  double path_detour_goal_tolerance_;
   bool use_leader_offsets_;
   bool control_mode_changed_{false};
   bool target_initialized_{false};
+  bool path_detour_active_{false};
   uint8_t last_formation_{255};
   double formation_anchor_yaw_{0.0};
   Pose2D filtered_target_{0.0, 0.0, 0.0};

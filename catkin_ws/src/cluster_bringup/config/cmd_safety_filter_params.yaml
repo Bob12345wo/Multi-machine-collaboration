@@ -42,3 +42,7 @@ robot_safe_distance: 0.55
 robot_danger_distance: 0.50
 robot_slowdown_gain: 1.0
 robot_turn_gain: 0.0
+
+# Debug output for collision analysis. Disable after tuning.
+debug_enabled: true
+debug_period: 0.5
