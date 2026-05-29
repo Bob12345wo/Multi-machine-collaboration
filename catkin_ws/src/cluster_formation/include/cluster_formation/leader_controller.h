@@ -4,6 +4,7 @@
 #include <ros/ros.h>
 #include <geometry_msgs/Twist.h>
 #include <nav_msgs/Odometry.h>
+#include <std_msgs/Bool.h>
 #include <std_msgs/String.h>
 
 #include "cluster_msgs/LeaderCmd.h"
@@ -31,6 +32,7 @@ private:
   void followerOdomCallback(const nav_msgs::Odometry::ConstPtr& msg);
   void followerStatusCallback(const cluster_msgs::FollowerStatus::ConstPtr& msg);
   void teleopVelCallback(const geometry_msgs::Twist::ConstPtr& msg);
+  void returnHomeCallback(const std_msgs::Bool::ConstPtr& msg);
 
   // Service callbacks
   bool setModeCallback(cluster_msgs::SetMode::Request& req,
@@ -44,6 +46,7 @@ private:
   // Core logic
   void computeFormationTarget();
   void computeFollowTarget();
+  void computeReturnHome();
   void checkSafety();
   void publishLeaderCmd();
   geometry_msgs::Pose computeTargetPose(const cluster_common::Pose2D& leader_pose,
@@ -62,6 +65,7 @@ private:
   ros::Subscriber follower_odom_sub_;
   ros::Subscriber follower_status_sub_;
   ros::Subscriber teleop_vel_sub_;
+  ros::Subscriber return_home_sub_;
 
   // Publishers
   ros::Publisher cmd_vel_pub_;
@@ -83,6 +87,9 @@ private:
   bool follower_odom_received_;
   bool follower_status_received_;
   bool teleop_cmd_received_;
+  bool home_pose_received_;
+  bool return_home_active_;
+  cluster_common::Pose2D home_pose_;
 
   // State
   uint8_t current_mode_;
@@ -103,6 +110,10 @@ private:
   double max_linear_speed_;
   double max_angular_speed_;
   double speed_limit_;
+  double return_home_pos_tolerance_;
+  double return_home_yaw_tolerance_;
+  double return_home_k_v_;
+  double return_home_k_w_;
 
   // LeaderCmd cache
   cluster_msgs::LeaderCmd cached_leader_cmd_;

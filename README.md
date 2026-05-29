@@ -82,6 +82,9 @@ space  stop
 - The current follower mode is configured in `catkin_ws/src/cluster_bringup/config/map_follower_params.yaml`.
 - `control_mode: body_orbit` keeps robot2 in the leader body frame, so side and triangle formations rotate with car1.
 - `cmd_safety_filter_params.yaml` configures the robot2 lidar safety filter between `/robot2/cmd_vel_raw` and `/robot2/cmd_vel`.
+- Keyboard `5` switches the map follower control mode between `body_orbit` and `wheeltec_global`.
+- Keyboard `6` toggles the robot2 lidar avoidance filter when it is launched with `enable_avoidance:=true`.
+- Keyboard `0` sends car1 back to the startup home pose recorded from `/robot1/odom`.
 
 ## Build
 

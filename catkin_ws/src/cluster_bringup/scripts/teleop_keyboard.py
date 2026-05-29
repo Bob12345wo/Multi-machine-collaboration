@@ -16,6 +16,9 @@ Keys:
   2      : LINE formation
   3      : TRIANGLE_LEFT formation
   4      : TRIANGLE_RIGHT formation
+  5      : switch follower control mode
+  6      : toggle avoidance filter
+  0      : return car1 to startup home pose
 
 CTRL-C to quit.
 """
@@ -27,6 +30,8 @@ import termios
 import tty
 
 from geometry_msgs.msg import Twist
+from std_msgs.msg import Bool
+from std_msgs.msg import String
 from cluster_msgs.srv import SetMode, SetFormation
 
 
@@ -38,6 +43,12 @@ class TeleopKeyboard:
         # Publisher
         teleop_topic = '/' + self.ns + '/teleop_vel' if self.ns else '/teleop_vel'
         self.pub = rospy.Publisher(teleop_topic, Twist, queue_size=10)
+        self.control_mode_pub = rospy.Publisher(
+            '/robot2/follower_control_mode', String, queue_size=1, latch=True)
+        self.avoidance_pub = rospy.Publisher(
+            '/robot2/avoidance_enabled', Bool, queue_size=1, latch=True)
+        self.return_home_pub = rospy.Publisher(
+            '/robot1/return_home', Bool, queue_size=1)
 
         # Service clients
         rospy.wait_for_service('/robot1/set_mode', timeout=10.0)
@@ -48,6 +59,9 @@ class TeleopKeyboard:
         # Speed settings
         self.speed = rospy.get_param('~speed', 0.3)
         self.turn = rospy.get_param('~turn', 0.5)
+        self.control_modes = ['body_orbit', 'wheeltec_global']
+        self.control_mode_index = 0
+        self.avoidance_enabled = True
 
         # Terminal settings
         self.settings = termios.tcgetattr(sys.stdin)
@@ -76,6 +90,9 @@ class TeleopKeyboard:
         print("    2    : LINE")
         print("    3    : TRIANGLE_LEFT")
         print("    4    : TRIANGLE_RIGHT")
+        print("    5    : switch follower mode (body_orbit / wheeltec_global)")
+        print("    6    : toggle avoidance filter")
+        print("    0    : return car1 to startup home pose")
         print("  q / CTRL-C : quit")
         print("=" * 50 + "\n")
 
@@ -117,6 +134,22 @@ class TeleopKeyboard:
         except rospy.ServiceException as e:
             rospy.logerr("Service call failed: %s", e)
 
+    def switch_follower_control_mode(self):
+        self.control_mode_index = (self.control_mode_index + 1) % len(self.control_modes)
+        mode = self.control_modes[self.control_mode_index]
+        self.control_mode_pub.publish(String(data=mode))
+        rospy.loginfo("Follower control mode: %s", mode)
+
+    def return_home(self):
+        self.return_home_pub.publish(Bool(data=True))
+        rospy.loginfo("Return car1 to startup home pose")
+
+    def toggle_avoidance(self):
+        self.avoidance_enabled = not self.avoidance_enabled
+        self.avoidance_pub.publish(Bool(data=self.avoidance_enabled))
+        rospy.loginfo("Avoidance filter: %s",
+                      "enabled" if self.avoidance_enabled else "disabled")
+
     def run(self):
         rate = rospy.Rate(20)
         while self.running and not rospy.is_shutdown():
@@ -156,6 +189,12 @@ class TeleopKeyboard:
                 self.switch_formation(2)
             elif key == '4':
                 self.switch_formation(3)
+            elif key == '5':
+                self.switch_follower_control_mode()
+            elif key == '6':
+                self.toggle_avoidance()
+            elif key == '0':
+                self.return_home()
             elif key == 'q':
                 self.running = False
                 break

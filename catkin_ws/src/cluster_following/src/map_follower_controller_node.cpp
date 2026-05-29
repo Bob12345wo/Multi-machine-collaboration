@@ -5,12 +5,14 @@
 #include <ros/ros.h>
 #include <geometry_msgs/Twist.h>
 #include <geometry_msgs/TransformStamped.h>
+#include <std_msgs/String.h>
 #include <tf2/utils.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
 
 #include "cluster_common/pose_utils.h"
+#include "cluster_msgs/FollowerStatus.h"
 #include "cluster_msgs/LeaderCmd.h"
 
 class MapFollowerController {
@@ -20,6 +22,8 @@ public:
     pnh_.param<std::string>("leader_frame", leader_frame_, "robot1/base_link");
     pnh_.param<std::string>("follower_frame", follower_frame_, "robot2/base_link");
     pnh_.param<std::string>("cmd_vel_topic", cmd_vel_topic_, "/robot2/cmd_vel");
+    pnh_.param<std::string>("control_mode_topic", control_mode_topic_,
+                            "/robot2/follower_control_mode");
     pnh_.param<std::string>("control_mode", control_mode_, "body_orbit");
     pnh_.param("use_leader_offsets", use_leader_offsets_, true);
     pnh_.param("offset_x", offset_x_, -0.8);
@@ -58,7 +62,11 @@ public:
 
     leader_cmd_sub_ = nh_.subscribe("/robot1/leader_cmd", 10,
         &MapFollowerController::leaderCmdCallback, this);
+    control_mode_sub_ = nh_.subscribe(control_mode_topic_, 5,
+        &MapFollowerController::controlModeCallback, this);
     cmd_vel_pub_ = nh_.advertise<geometry_msgs::Twist>(cmd_vel_topic_, 10);
+    status_pub_ = nh_.advertise<cluster_msgs::FollowerStatus>(
+        "/robot2/follower_status", 10);
 
     control_timer_ = nh_.createTimer(ros::Duration(1.0 / loop_rate_),
         &MapFollowerController::controlLoop, this);
@@ -75,6 +83,20 @@ private:
     latest_leader_cmd_ = *msg;
     leader_cmd_received_ = true;
     last_leader_cmd_time_ = ros::Time::now();
+  }
+
+  void controlModeCallback(const std_msgs::String::ConstPtr& msg) {
+    if (msg->data != "body_orbit" && msg->data != "wheeltec_global") {
+      ROS_WARN("Ignoring unsupported follower control mode: %s", msg->data.c_str());
+      return;
+    }
+    if (control_mode_ != msg->data) {
+      ROS_INFO("Follower control mode: %s -> %s",
+               control_mode_.c_str(), msg->data.c_str());
+      control_mode_ = msg->data;
+      control_mode_changed_ = true;
+      target_initialized_ = false;
+    }
   }
 
   bool lookupPose(const std::string& frame, Pose2D& pose) {
@@ -95,9 +117,16 @@ private:
 
   void controlLoop(const ros::TimerEvent&) {
     if (!leader_cmd_received_ ||
-        (ros::Time::now() - last_leader_cmd_time_).toSec() > 0.5 ||
-        latest_leader_cmd_.mode != cluster_msgs::LeaderCmd::MODE_FORMATION) {
+        (ros::Time::now() - last_leader_cmd_time_).toSec() > 0.5) {
       stop();
+      publishStatus(cluster_msgs::FollowerStatus::STATE_LOST,
+                    0.0, 0.0, 0.0, 0.0, false);
+      return;
+    }
+    if (latest_leader_cmd_.mode != cluster_msgs::LeaderCmd::MODE_FORMATION) {
+      stop();
+      publishStatus(cluster_msgs::FollowerStatus::STATE_IDLE,
+                    0.0, 0.0, 0.0, 0.0, true);
       return;
     }
 
@@ -105,6 +134,8 @@ private:
     Pose2D follower;
     if (!lookupPose(leader_frame_, leader) || !lookupPose(follower_frame_, follower)) {
       stop();
+      publishStatus(cluster_msgs::FollowerStatus::STATE_LOST,
+                    0.0, 0.0, 0.0, 0.0, false);
       return;
     }
 
@@ -113,6 +144,14 @@ private:
     if (use_leader_offsets_) {
       active_offset_x = latest_leader_cmd_.offset_x;
       active_offset_y = latest_leader_cmd_.offset_y;
+    }
+
+    if (control_mode_changed_) {
+      if (control_mode_ == "wheeltec_global") {
+        formation_anchor_yaw_ = leader.yaw;
+      }
+      control_mode_changed_ = false;
+      target_initialized_ = false;
     }
 
     if (latest_leader_cmd_.formation != last_formation_) {
@@ -168,6 +207,8 @@ private:
         std::fabs(leader_vx) < min_linear_speed_ &&
         std::fabs(leader_wz) < min_angular_speed_) {
       stop();
+      publishStatus(cluster_msgs::FollowerStatus::STATE_IDLE,
+                    lateral_err, forward_err, yaw_err, distance, true);
       return;
     }
 
@@ -241,12 +282,28 @@ private:
 
     geometry_msgs::Twist cmd = filterCommand(vx, wz);
     cmd_vel_pub_.publish(cmd);
+    publishStatus(cluster_msgs::FollowerStatus::STATE_TRACKING,
+                  lateral_err, forward_err, yaw_err, distance, true);
   }
 
   void stop() {
     geometry_msgs::Twist cmd;
     cmd_vel_pub_.publish(cmd);
     last_cmd_ = cmd;
+  }
+
+  void publishStatus(uint8_t state, double error_x, double error_y,
+                     double error_yaw, double error_dist,
+                     bool leader_visible) {
+    cluster_msgs::FollowerStatus status;
+    status.header.stamp = ros::Time::now();
+    status.state = state;
+    status.error_x = error_x;
+    status.error_y = error_y;
+    status.error_yaw = error_yaw;
+    status.error_dist = error_dist;
+    status.leader_visible = leader_visible;
+    status_pub_.publish(status);
   }
 
   Pose2D filterTarget(const Pose2D& raw_target) {
@@ -289,7 +346,9 @@ private:
   ros::NodeHandle nh_;
   ros::NodeHandle pnh_;
   ros::Subscriber leader_cmd_sub_;
+  ros::Subscriber control_mode_sub_;
   ros::Publisher cmd_vel_pub_;
+  ros::Publisher status_pub_;
   ros::Timer control_timer_;
   tf2_ros::Buffer tf_buffer_;
   tf2_ros::TransformListener tf_listener_;
@@ -302,6 +361,7 @@ private:
   std::string leader_frame_;
   std::string follower_frame_;
   std::string cmd_vel_topic_;
+  std::string control_mode_topic_;
   std::string control_mode_;
 
   double offset_x_;
@@ -338,6 +398,7 @@ private:
   bool allow_reverse_while_leader_forward_;
   bool allow_orbit_reverse_;
   bool use_leader_offsets_;
+  bool control_mode_changed_{false};
   bool target_initialized_{false};
   uint8_t last_formation_{255};
   double formation_anchor_yaw_{0.0};

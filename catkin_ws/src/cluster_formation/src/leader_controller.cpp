@@ -10,6 +10,8 @@ LeaderController::LeaderController(const ros::NodeHandle& nh, const ros::NodeHan
   , follower_odom_received_(false)
   , follower_status_received_(false)
   , teleop_cmd_received_(false)
+  , home_pose_received_(false)
+  , return_home_active_(false)
   , current_mode_(cluster_msgs::LeaderCmd::MODE_IDLE)
   , current_formation_(cluster_msgs::LeaderCmd::FORMATION_COLUMN)
   , use_custom_offsets_(false)
@@ -23,6 +25,10 @@ LeaderController::LeaderController(const ros::NodeHandle& nh, const ros::NodeHan
   pnh_.param("max_linear_speed", max_linear_speed_, 0.8);
   pnh_.param("max_angular_speed", max_angular_speed_, 1.0);
   pnh_.param("speed_limit", speed_limit_, 0.6);
+  pnh_.param("return_home_pos_tolerance", return_home_pos_tolerance_, 0.08);
+  pnh_.param("return_home_yaw_tolerance", return_home_yaw_tolerance_, 0.12);
+  pnh_.param("return_home_k_v", return_home_k_v_, 0.7);
+  pnh_.param("return_home_k_w", return_home_k_w_, 1.0);
 
   std::string initial_mode;
   pnh_.param<std::string>("initial_mode", initial_mode, "idle");
@@ -45,6 +51,8 @@ LeaderController::LeaderController(const ros::NodeHandle& nh, const ros::NodeHan
       &LeaderController::followerStatusCallback, this);
   teleop_vel_sub_ = nh_.subscribe("/robot1/teleop_vel", 10,
       &LeaderController::teleopVelCallback, this);
+  return_home_sub_ = nh_.subscribe("/robot1/return_home", 5,
+      &LeaderController::returnHomeCallback, this);
 
   // Publishers
   cmd_vel_pub_ = nh_.advertise<geometry_msgs::Twist>("/robot1/cmd_vel", 10);
@@ -75,6 +83,12 @@ LeaderController::LeaderController(const ros::NodeHandle& nh, const ros::NodeHan
 void LeaderController::selfOdomCallback(const nav_msgs::Odometry::ConstPtr& msg) {
   latest_self_odom_ = *msg;
   self_odom_received_ = true;
+  if (!home_pose_received_) {
+    home_pose_ = cluster_common::odomToPose2D(*msg);
+    home_pose_received_ = true;
+    ROS_INFO("Recorded robot1 home pose: x=%.2f y=%.2f yaw=%.2f",
+             home_pose_.x, home_pose_.y, home_pose_.theta);
+  }
 }
 
 void LeaderController::followerOdomCallback(const nav_msgs::Odometry::ConstPtr& msg) {
@@ -99,6 +113,20 @@ void LeaderController::teleopVelCallback(const geometry_msgs::Twist::ConstPtr& m
   if (current_mode_ != cluster_msgs::LeaderCmd::MODE_IDLE) {
     cmd_vel_pub_.publish(*msg);
   }
+}
+
+void LeaderController::returnHomeCallback(const std_msgs::Bool::ConstPtr& msg) {
+  if (!msg->data) {
+    return_home_active_ = false;
+    return;
+  }
+  if (!home_pose_received_) {
+    ROS_WARN("Return home requested before home pose is available");
+    return;
+  }
+  return_home_active_ = true;
+  current_mode_ = cluster_msgs::LeaderCmd::MODE_TELEOP;
+  ROS_INFO("Return home requested");
 }
 
 // ---------- Service Callbacks ----------
@@ -147,6 +175,7 @@ bool LeaderController::setFormationCallback(
   }
 
   current_formation_ = req.formation;
+  use_custom_offsets_ = false;
   ROS_INFO("SetFormation: %d", current_formation_);
 
   res.success = true;
@@ -158,6 +187,11 @@ bool LeaderController::setFormationCallback(
 
 void LeaderController::controlLoop(const ros::TimerEvent& event) {
   checkSafety();
+
+  if (return_home_active_) {
+    computeReturnHome();
+    return;
+  }
 
   // Compute target and publish LeaderCmd
   switch (current_mode_) {
@@ -178,6 +212,47 @@ void LeaderController::controlLoop(const ros::TimerEvent& event) {
       leader_cmd_pub_.publish(cached_leader_cmd_);
       break;
   }
+}
+
+void LeaderController::computeReturnHome() {
+  if (!self_odom_received_ || !home_pose_received_) {
+    return_home_active_ = false;
+    return;
+  }
+
+  cluster_common::Pose2D self = cluster_common::odomToPose2D(latest_self_odom_);
+  const double dx = home_pose_.x - self.x;
+  const double dy = home_pose_.y - self.y;
+  const double distance = std::sqrt(dx * dx + dy * dy);
+  const double target_heading = std::atan2(dy, dx);
+  const double heading_err = cluster_common::normalizeAngle(target_heading - self.theta);
+  const double yaw_err = cluster_common::normalizeAngle(home_pose_.theta - self.theta);
+
+  geometry_msgs::Twist cmd;
+  if (distance > return_home_pos_tolerance_) {
+    const double speed_scale = std::max(0.0, std::cos(heading_err));
+    cmd.linear.x = cluster_common::clamp(return_home_k_v_ * distance * speed_scale,
+                                         0.0, max_linear_speed_);
+    cmd.angular.z = cluster_common::clamp(return_home_k_w_ * heading_err,
+                                          -max_angular_speed_, max_angular_speed_);
+  } else if (std::fabs(yaw_err) > return_home_yaw_tolerance_) {
+    cmd.angular.z = cluster_common::clamp(return_home_k_w_ * yaw_err,
+                                          -max_angular_speed_, max_angular_speed_);
+  } else {
+    return_home_active_ = false;
+    cmd_vel_pub_.publish(cmd);
+    ROS_INFO("Return home complete");
+  }
+
+  cmd_vel_pub_.publish(cmd);
+
+  cached_leader_cmd_.header.stamp = ros::Time::now();
+  cached_leader_cmd_.mode = cluster_msgs::LeaderCmd::MODE_TELEOP;
+  cached_leader_cmd_.formation = current_formation_;
+  cached_leader_cmd_.leader_vx = cmd.linear.x;
+  cached_leader_cmd_.leader_vyaw = cmd.angular.z;
+  cached_leader_cmd_.speed_limit = speed_limit_;
+  leader_cmd_pub_.publish(cached_leader_cmd_);
 }
 
 void LeaderController::computeFormationTarget() {

@@ -3,6 +3,11 @@
 input_cmd_topic: /robot2/cmd_vel_raw
 output_cmd_topic: /robot2/cmd_vel
 scan_topic: /robot2/scan
+enable_topic: /robot2/avoidance_enabled
+enabled: true
+robot_keepout_enabled: true
+leader_frame: robot1/base_link
+follower_frame: robot2/base_link
 
 loop_rate: 20
 cmd_timeout: 0.5
@@ -30,3 +35,10 @@ min_avoid_linear_speed: 0.08
 slowdown_gain: 1.0
 turn_gain: 0.35
 danger_reverse_speed: -0.06
+
+# Map/TF based inter-robot protection. This does not depend on lidar returns,
+# so car2 can still avoid driving into car1 when both lidars are at the same height.
+robot_safe_distance: 0.55
+robot_danger_distance: 0.50
+robot_slowdown_gain: 1.0
+robot_turn_gain: 0.0

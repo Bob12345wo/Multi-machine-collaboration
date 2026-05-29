@@ -5,16 +5,26 @@
 
 #include <ros/ros.h>
 #include <geometry_msgs/Twist.h>
+#include <geometry_msgs/TransformStamped.h>
 #include <sensor_msgs/LaserScan.h>
+#include <std_msgs/Bool.h>
+#include <tf2/exceptions.h>
+#include <tf2_ros/buffer.h>
+#include <tf2_ros/transform_listener.h>
 
 #include "cluster_common/pose_utils.h"
 
 class CmdSafetyFilter {
 public:
-  CmdSafetyFilter() : pnh_("~") {
+  CmdSafetyFilter() : pnh_("~"), tf_listener_(tf_buffer_) {
     pnh_.param<std::string>("input_cmd_topic", input_cmd_topic_, "/robot2/cmd_vel_raw");
     pnh_.param<std::string>("output_cmd_topic", output_cmd_topic_, "/robot2/cmd_vel");
     pnh_.param<std::string>("scan_topic", scan_topic_, "/robot2/scan");
+    pnh_.param<std::string>("enable_topic", enable_topic_, "/robot2/avoidance_enabled");
+    pnh_.param<std::string>("leader_frame", leader_frame_, "robot1/base_link");
+    pnh_.param<std::string>("follower_frame", follower_frame_, "robot2/base_link");
+    pnh_.param("enabled", enabled_, true);
+    pnh_.param("robot_keepout_enabled", robot_keepout_enabled_, true);
     pnh_.param("loop_rate", loop_rate_, 20.0);
     pnh_.param("cmd_timeout", cmd_timeout_, 0.5);
     pnh_.param("scan_timeout", scan_timeout_, 0.7);
@@ -32,9 +42,14 @@ public:
     pnh_.param("slowdown_gain", slowdown_gain_, 1.0);
     pnh_.param("turn_gain", turn_gain_, 0.35);
     pnh_.param("danger_reverse_speed", danger_reverse_speed_, -0.06);
+    pnh_.param("robot_safe_distance", robot_safe_distance_, 0.55);
+    pnh_.param("robot_danger_distance", robot_danger_distance_, 0.50);
+    pnh_.param("robot_slowdown_gain", robot_slowdown_gain_, 1.0);
+    pnh_.param("robot_turn_gain", robot_turn_gain_, 0.0);
 
     cmd_sub_ = nh_.subscribe(input_cmd_topic_, 10, &CmdSafetyFilter::cmdCallback, this);
     scan_sub_ = nh_.subscribe(scan_topic_, 10, &CmdSafetyFilter::scanCallback, this);
+    enable_sub_ = nh_.subscribe(enable_topic_, 5, &CmdSafetyFilter::enableCallback, this);
     cmd_pub_ = nh_.advertise<geometry_msgs::Twist>(output_cmd_topic_, 10);
     timer_ = nh_.createTimer(ros::Duration(1.0 / loop_rate_),
                              &CmdSafetyFilter::controlLoop, this);
@@ -54,6 +69,11 @@ private:
     latest_scan_ = *msg;
     last_scan_time_ = ros::Time::now();
     scan_received_ = true;
+  }
+
+  void enableCallback(const std_msgs::Bool::ConstPtr& msg) {
+    enabled_ = msg->data;
+    ROS_INFO("CmdSafetyFilter avoidance %s", enabled_ ? "enabled" : "disabled");
   }
 
   static double angleDiff(double a, double b) {
@@ -101,10 +121,13 @@ private:
         (now - last_scan_time_).toSec() <= scan_timeout_;
     double obstacle_dist = 0.0;
     double obstacle_angle = 0.0;
-    if (scan_fresh && cmd.linear.x > min_avoid_linear_speed_ &&
+    if (enabled_ && scan_fresh && cmd.linear.x > min_avoid_linear_speed_ &&
         closestObstacle(obstacle_dist, obstacle_angle)) {
       const double clearance = obstacle_dist - front_overhang_distance_;
       applyAvoidance(clearance, obstacle_angle, cmd);
+    }
+    if (enabled_ && robot_keepout_enabled_) {
+      applyRobotKeepout(cmd);
     }
 
     cmd.linear.x = cluster_common::clamp(cmd.linear.x,
@@ -137,10 +160,50 @@ private:
     cmd.angular.z += turn_dir * turn_gain_ * risk;
   }
 
+  void applyRobotKeepout(geometry_msgs::Twist& cmd) {
+    geometry_msgs::TransformStamped leader_in_follower;
+    try {
+      leader_in_follower = tf_buffer_.lookupTransform(
+          follower_frame_, leader_frame_, ros::Time(0), ros::Duration(0.02));
+    } catch (const tf2::TransformException& ex) {
+      ROS_WARN_THROTTLE(2.0, "Robot keepout TF unavailable: %s", ex.what());
+      return;
+    }
+
+    const double forward = leader_in_follower.transform.translation.x;
+    const double lateral = leader_in_follower.transform.translation.y;
+    const double distance = std::hypot(forward, lateral);
+    if (distance >= robot_safe_distance_) return;
+
+    const bool moving_toward_leader =
+        (cmd.linear.x > min_linear_speed_ && forward > 0.0) ||
+        (cmd.linear.x < -min_linear_speed_ && forward < 0.0);
+    if (!moving_toward_leader) return;
+
+    const double span = std::max(robot_safe_distance_ - robot_danger_distance_, 0.01);
+    const double risk = cluster_common::clamp(
+        (robot_safe_distance_ - distance) / span, 0.0, 1.0);
+    if (distance <= robot_danger_distance_) {
+      cmd.linear.x = 0.0;
+      ROS_WARN_THROTTLE(0.5, "Robot keepout danger %.2fm, forward %.2f lateral %.2f",
+                        distance, forward, lateral);
+      return;
+    }
+
+    cmd.linear.x *= std::max(0.0, 1.0 - robot_slowdown_gain_ * risk);
+    if (robot_turn_gain_ > 0.0) {
+      const double turn_dir = (lateral >= 0.0) ? -1.0 : 1.0;
+      cmd.angular.z += turn_dir * robot_turn_gain_ * risk;
+    }
+  }
+
   ros::NodeHandle nh_;
   ros::NodeHandle pnh_;
+  tf2_ros::Buffer tf_buffer_;
+  tf2_ros::TransformListener tf_listener_;
   ros::Subscriber cmd_sub_;
   ros::Subscriber scan_sub_;
+  ros::Subscriber enable_sub_;
   ros::Publisher cmd_pub_;
   ros::Timer timer_;
 
@@ -154,6 +217,11 @@ private:
   std::string input_cmd_topic_;
   std::string output_cmd_topic_;
   std::string scan_topic_;
+  std::string enable_topic_;
+  std::string leader_frame_;
+  std::string follower_frame_;
+  bool enabled_;
+  bool robot_keepout_enabled_;
   double loop_rate_;
   double cmd_timeout_;
   double scan_timeout_;
@@ -171,6 +239,10 @@ private:
   double slowdown_gain_;
   double turn_gain_;
   double danger_reverse_speed_;
+  double robot_safe_distance_;
+  double robot_danger_distance_;
+  double robot_slowdown_gain_;
+  double robot_turn_gain_;
 };
 
 int main(int argc, char** argv) {

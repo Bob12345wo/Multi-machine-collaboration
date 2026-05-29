@@ -24,6 +24,7 @@ catkin_package(
     roscpp
     geometry_msgs
     nav_msgs
+    std_msgs
     tf2
     tf2_geometry_msgs
     cluster_msgs
