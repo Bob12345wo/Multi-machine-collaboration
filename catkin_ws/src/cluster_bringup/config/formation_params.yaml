@@ -8,3 +8,8 @@ follower_lost_timeout: 3.0
 max_formation_error: 2.0
 max_error_duration: 5.0
 speed_limit: 0.6
+
+# Key 3 circle-show formation. car1 drives a slow circle and followers take
+# 120-degree phase positions on the same circle.
+circle_show_radius: 0.5
+circle_show_angular_speed: 0.32

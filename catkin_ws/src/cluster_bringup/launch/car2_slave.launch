@@ -1,5 +1,5 @@
 <launch>
-  <!-- One-command car2 startup for shared-map two-car testing. -->
+  <!-- One-command car2 startup for shared-map multi-car testing. -->
   <arg name="ros_ip" default="192.168.137.133" />
   <arg name="lidar_port" default="/dev/ttyUSB0" />
   <arg name="base_port" default="ttyTHS1" />

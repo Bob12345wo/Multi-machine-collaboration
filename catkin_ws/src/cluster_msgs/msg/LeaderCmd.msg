@@ -12,7 +12,8 @@ uint8 MODE_FOLLOW=3
 uint8 formation
 uint8 FORMATION_COLUMN=0
 uint8 FORMATION_LINE=1
-uint8 FORMATION_TRIANGLE_LEFT=2
+uint8 FORMATION_CIRCLE_SHOW=2
+uint8 FORMATION_TRIANGLE=3
 uint8 FORMATION_TRIANGLE_RIGHT=3
 
 # Desired follower offset in leader body frame

@@ -1,12 +1,12 @@
 <launch>
   <!--
-    One-command car1 startup for shared-map two-car testing.
+    One-command car1 startup for shared-map three-car testing.
 
     Starts:
       - car1 base and leader controller
       - car1 LD14 lidar through raw scan republishing
-      - namespaced odom TF for both robots
-      - shared map_server + two AMCL nodes
+      - namespaced odom TF for robots
+      - shared map_server + AMCL nodes
       - optional map-frame follower controller
   -->
   <arg name="mode" default="teleop" />
@@ -32,6 +32,7 @@
     <arg name="map_file" value="$(arg map_file)" />
     <arg name="robot1_scan" value="/robot1/scan" />
     <arg name="robot2_scan" value="/robot2/scan" />
+    <arg name="robot3_scan" value="/robot3/scan" />
   </include>
 
   <group if="$(arg start_map_follower)">

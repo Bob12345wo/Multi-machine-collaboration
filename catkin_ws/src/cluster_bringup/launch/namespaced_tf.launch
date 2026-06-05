@@ -18,4 +18,11 @@
     <param name="odom_frame" value="robot2/odom" />
     <param name="base_frame" value="robot2/base_link" />
   </node>
+
+  <node pkg="cluster_bringup" type="odom_tf_republisher.py"
+        name="robot3_odom_tf_republisher" output="screen">
+    <param name="odom_topic" value="/robot3/odom" />
+    <param name="odom_frame" value="robot3/odom" />
+    <param name="base_frame" value="robot3/base_link" />
+  </node>
 </launch>

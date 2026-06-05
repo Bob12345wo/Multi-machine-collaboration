@@ -23,8 +23,10 @@ public:
     pnh_.param<std::string>("enable_topic", enable_topic_, "/robot2/avoidance_enabled");
     pnh_.param<std::string>("leader_frame", leader_frame_, "robot1/base_link");
     pnh_.param<std::string>("follower_frame", follower_frame_, "robot2/base_link");
+    pnh_.param<std::string>("peer_frame", peer_frame_, "");
     pnh_.param("enabled", enabled_, true);
     pnh_.param("robot_keepout_enabled", robot_keepout_enabled_, true);
+    pnh_.param("peer_keepout_enabled", peer_keepout_enabled_, true);
     pnh_.param("loop_rate", loop_rate_, 20.0);
     pnh_.param("cmd_timeout", cmd_timeout_, 0.5);
     pnh_.param("scan_timeout", scan_timeout_, 0.7);
@@ -46,6 +48,11 @@ public:
     pnh_.param("robot_danger_distance", robot_danger_distance_, 0.50);
     pnh_.param("robot_slowdown_gain", robot_slowdown_gain_, 1.0);
     pnh_.param("robot_turn_gain", robot_turn_gain_, 0.0);
+    pnh_.param("peer_safe_distance", peer_safe_distance_, 0.75);
+    pnh_.param("peer_danger_distance", peer_danger_distance_, 0.60);
+    pnh_.param("peer_slowdown_gain", peer_slowdown_gain_, 1.0);
+    pnh_.param("peer_turn_gain", peer_turn_gain_, 0.0);
+    pnh_.param("peer_danger_wz_scale", peer_danger_wz_scale_, 0.3);
     pnh_.param("debug_enabled", debug_enabled_, false);
     pnh_.param("debug_period", debug_period_, 0.5);
 
@@ -61,6 +68,14 @@ public:
   }
 
 private:
+  struct KeepoutResult {
+    bool tf_ok{false};
+    bool moving_toward{false};
+    double distance{0.0};
+    double forward{0.0};
+    double lateral{0.0};
+  };
+
   void cmdCallback(const geometry_msgs::Twist::ConstPtr& msg) {
     latest_cmd_ = *msg;
     last_cmd_time_ = ros::Time::now();
@@ -137,16 +152,20 @@ private:
     const double after_lidar_vx = cmd.linear.x;
     const double after_lidar_wz = cmd.angular.z;
 
-    bool robot_tf_ok = false;
-    bool robot_moving_toward = false;
+    KeepoutResult leader_keepout;
+    KeepoutResult peer_keepout;
     bool robot_keepout_applied = false;
-    double robot_distance = 0.0;
-    double robot_forward = 0.0;
-    double robot_lateral = 0.0;
+    bool peer_keepout_applied = false;
     if (enabled_ && robot_keepout_enabled_) {
-      robot_keepout_applied = applyRobotKeepout(
-          cmd, robot_tf_ok, robot_distance, robot_forward,
-          robot_lateral, robot_moving_toward);
+      robot_keepout_applied = applyFrameKeepout(
+          leader_frame_, "leader", robot_safe_distance_, robot_danger_distance_,
+          robot_slowdown_gain_, robot_turn_gain_, 1.0, cmd, leader_keepout);
+    }
+    if (enabled_ && peer_keepout_enabled_ && !peer_frame_.empty()) {
+      peer_keepout_applied = applyFrameKeepout(
+          peer_frame_, "peer", peer_safe_distance_, peer_danger_distance_,
+          peer_slowdown_gain_, peer_turn_gain_, peer_danger_wz_scale_,
+          cmd, peer_keepout);
     }
 
     cmd.linear.x = cluster_common::clamp(cmd.linear.x,
@@ -157,14 +176,19 @@ private:
     if (std::fabs(cmd.angular.z) < min_angular_speed_) cmd.angular.z = 0.0;
     if (debug_enabled_) {
       ROS_INFO_THROTTLE(debug_period_,
-          "[SAFETY_DBG] en=%d raw(vx=%.3f,wz=%.3f) lidar(fresh=%d,found=%d,applied=%d,dist=%.3f,clear=%.3f,angle=%.3f,after_vx=%.3f,after_wz=%.3f) robot(tf=%d,dist=%.3f,front=%.3f,lat=%.3f,toward=%d,applied=%d,safe=%.2f,danger=%.2f) final(vx=%.3f,wz=%.3f)",
+          "[SAFETY_DBG] en=%d raw(vx=%.3f,wz=%.3f) lidar(fresh=%d,found=%d,applied=%d,dist=%.3f,clear=%.3f,angle=%.3f,after_vx=%.3f,after_wz=%.3f) leader(tf=%d,dist=%.3f,front=%.3f,lat=%.3f,toward=%d,applied=%d,safe=%.2f,danger=%.2f) peer(frame=%s,tf=%d,dist=%.3f,front=%.3f,lat=%.3f,toward=%d,applied=%d,safe=%.2f,danger=%.2f) final(vx=%.3f,wz=%.3f)",
           enabled_ ? 1 : 0, raw_vx, raw_wz,
           scan_fresh ? 1 : 0, obstacle_found ? 1 : 0, lidar_applied ? 1 : 0,
           obstacle_dist, obstacle_clearance, obstacle_angle,
           after_lidar_vx, after_lidar_wz,
-          robot_tf_ok ? 1 : 0, robot_distance, robot_forward, robot_lateral,
-          robot_moving_toward ? 1 : 0, robot_keepout_applied ? 1 : 0,
+          leader_keepout.tf_ok ? 1 : 0, leader_keepout.distance,
+          leader_keepout.forward, leader_keepout.lateral,
+          leader_keepout.moving_toward ? 1 : 0, robot_keepout_applied ? 1 : 0,
           robot_safe_distance_, robot_danger_distance_,
+          peer_frame_.c_str(), peer_keepout.tf_ok ? 1 : 0,
+          peer_keepout.distance, peer_keepout.forward, peer_keepout.lateral,
+          peer_keepout.moving_toward ? 1 : 0, peer_keepout_applied ? 1 : 0,
+          peer_safe_distance_, peer_danger_distance_,
           cmd.linear.x, cmd.angular.z);
     }
     cmd_pub_.publish(cmd);
@@ -192,44 +216,60 @@ private:
     return true;
   }
 
-  bool applyRobotKeepout(geometry_msgs::Twist& cmd, bool& tf_ok,
-                         double& distance, double& forward, double& lateral,
-                         bool& moving_toward_leader) {
-    geometry_msgs::TransformStamped leader_in_follower;
+  bool applyFrameKeepout(const std::string& target_frame, const std::string& label,
+                         double safe_distance, double danger_distance,
+                         double slowdown_gain, double turn_gain,
+                         double danger_wz_scale, geometry_msgs::Twist& cmd,
+                         KeepoutResult& result) {
+    geometry_msgs::TransformStamped target_in_follower;
     try {
-      leader_in_follower = tf_buffer_.lookupTransform(
-          follower_frame_, leader_frame_, ros::Time(0), ros::Duration(0.02));
-      tf_ok = true;
+      target_in_follower = tf_buffer_.lookupTransform(
+          follower_frame_, target_frame, ros::Time(0), ros::Duration(0.02));
+      result.tf_ok = true;
     } catch (const tf2::TransformException& ex) {
-      ROS_WARN_THROTTLE(2.0, "Robot keepout TF unavailable: %s", ex.what());
-      tf_ok = false;
+      ROS_WARN_THROTTLE(2.0, "%s keepout TF unavailable (%s -> %s): %s",
+                        label.c_str(), follower_frame_.c_str(),
+                        target_frame.c_str(), ex.what());
+      result.tf_ok = false;
       return false;
     }
 
-    forward = leader_in_follower.transform.translation.x;
-    lateral = leader_in_follower.transform.translation.y;
-    distance = std::hypot(forward, lateral);
-    if (distance >= robot_safe_distance_) return false;
+    result.forward = target_in_follower.transform.translation.x;
+    result.lateral = target_in_follower.transform.translation.y;
+    result.distance = std::hypot(result.forward, result.lateral);
+    if (result.distance >= safe_distance) return false;
 
-    moving_toward_leader =
-        (cmd.linear.x > min_linear_speed_ && forward > 0.0) ||
-        (cmd.linear.x < -min_linear_speed_ && forward < 0.0);
-    if (!moving_toward_leader) return false;
+    result.moving_toward =
+        (cmd.linear.x > min_linear_speed_ && result.forward > 0.0) ||
+        (cmd.linear.x < -min_linear_speed_ && result.forward < 0.0);
+    if (!result.moving_toward) {
+      if (result.distance <= danger_distance &&
+          std::fabs(cmd.linear.x) <= min_linear_speed_ &&
+          std::fabs(cmd.angular.z) > min_angular_speed_) {
+        cmd.angular.z *= cluster_common::clamp(danger_wz_scale, 0.0, 1.0);
+        ROS_WARN_THROTTLE(0.5, "%s keepout close %.2fm: limiting turn only",
+                          label.c_str(), result.distance);
+        return true;
+      }
+      return false;
+    }
 
-    const double span = std::max(robot_safe_distance_ - robot_danger_distance_, 0.01);
+    const double span = std::max(safe_distance - danger_distance, 0.01);
     const double risk = cluster_common::clamp(
-        (robot_safe_distance_ - distance) / span, 0.0, 1.0);
-    if (distance <= robot_danger_distance_) {
+        (safe_distance - result.distance) / span, 0.0, 1.0);
+    if (result.distance <= danger_distance) {
       cmd.linear.x = 0.0;
-      ROS_WARN_THROTTLE(0.5, "Robot keepout danger %.2fm, forward %.2f lateral %.2f",
-                        distance, forward, lateral);
+      cmd.angular.z *= cluster_common::clamp(danger_wz_scale, 0.0, 1.0);
+      ROS_WARN_THROTTLE(0.5, "%s keepout danger %.2fm, forward %.2f lateral %.2f",
+                        label.c_str(), result.distance,
+                        result.forward, result.lateral);
       return true;
     }
 
-    cmd.linear.x *= std::max(0.0, 1.0 - robot_slowdown_gain_ * risk);
-    if (robot_turn_gain_ > 0.0) {
-      const double turn_dir = (lateral >= 0.0) ? -1.0 : 1.0;
-      cmd.angular.z += turn_dir * robot_turn_gain_ * risk;
+    cmd.linear.x *= std::max(0.0, 1.0 - slowdown_gain * risk);
+    if (turn_gain > 0.0) {
+      const double turn_dir = (result.lateral >= 0.0) ? -1.0 : 1.0;
+      cmd.angular.z += turn_dir * turn_gain * risk;
     }
     return true;
   }
@@ -257,8 +297,10 @@ private:
   std::string enable_topic_;
   std::string leader_frame_;
   std::string follower_frame_;
+  std::string peer_frame_;
   bool enabled_;
   bool robot_keepout_enabled_;
+  bool peer_keepout_enabled_;
   double loop_rate_;
   double cmd_timeout_;
   double scan_timeout_;
@@ -280,6 +322,11 @@ private:
   double robot_danger_distance_;
   double robot_slowdown_gain_;
   double robot_turn_gain_;
+  double peer_safe_distance_;
+  double peer_danger_distance_;
+  double peer_slowdown_gain_;
+  double peer_turn_gain_;
+  double peer_danger_wz_scale_;
   bool debug_enabled_;
   double debug_period_;
 };

@@ -9,12 +9,14 @@ LeaderController::LeaderController(const ros::NodeHandle& nh, const ros::NodeHan
   , self_odom_received_(false)
   , follower_odom_received_(false)
   , follower_status_received_(false)
+  , follower3_status_received_(false)
   , teleop_cmd_received_(false)
   , home_pose_received_(false)
   , return_home_active_(false)
   , current_mode_(cluster_msgs::LeaderCmd::MODE_IDLE)
   , current_formation_(cluster_msgs::LeaderCmd::FORMATION_COLUMN)
   , use_custom_offsets_(false)
+  , circle_show_was_active_(false)
   , error_exceeded_(false) {
 
   // Load params
@@ -29,6 +31,9 @@ LeaderController::LeaderController(const ros::NodeHandle& nh, const ros::NodeHan
   pnh_.param("return_home_yaw_tolerance", return_home_yaw_tolerance_, 0.12);
   pnh_.param("return_home_k_v", return_home_k_v_, 0.7);
   pnh_.param("return_home_k_w", return_home_k_w_, 1.0);
+  pnh_.param("circle_show_radius", circle_show_radius_, 0.5);
+  pnh_.param("circle_show_angular_speed", circle_show_angular_speed_, 0.32);
+  controller_start_time_ = ros::Time::now();
 
   std::string initial_mode;
   pnh_.param<std::string>("initial_mode", initial_mode, "idle");
@@ -49,6 +54,8 @@ LeaderController::LeaderController(const ros::NodeHandle& nh, const ros::NodeHan
       &LeaderController::followerOdomCallback, this);
   follower_status_sub_ = nh_.subscribe("/robot2/follower_status", 10,
       &LeaderController::followerStatusCallback, this);
+  follower3_status_sub_ = nh_.subscribe("/robot3/follower_status", 10,
+      &LeaderController::follower3StatusCallback, this);
   teleop_vel_sub_ = nh_.subscribe("/robot1/teleop_vel", 10,
       &LeaderController::teleopVelCallback, this);
   return_home_sub_ = nh_.subscribe("/robot1/return_home", 5,
@@ -103,6 +110,13 @@ void LeaderController::followerStatusCallback(
   last_follower_status_time_ = msg->header.stamp;
 }
 
+void LeaderController::follower3StatusCallback(
+    const cluster_msgs::FollowerStatus::ConstPtr& msg) {
+  latest_follower3_status_ = *msg;
+  follower3_status_received_ = true;
+  last_follower3_status_time_ = msg->header.stamp;
+}
+
 void LeaderController::teleopVelCallback(const geometry_msgs::Twist::ConstPtr& msg) {
   latest_teleop_cmd_ = *msg;
   teleop_cmd_received_ = true;
@@ -145,7 +159,7 @@ bool LeaderController::setModeCallback(
   current_mode_ = req.mode;
 
   if (req.mode == cluster_msgs::LeaderCmd::MODE_FORMATION) {
-    if (req.formation <= cluster_msgs::LeaderCmd::FORMATION_TRIANGLE_RIGHT) {
+    if (req.formation <= cluster_msgs::LeaderCmd::FORMATION_TRIANGLE) {
       current_formation_ = req.formation;
     }
     // Check for custom offsets
@@ -168,9 +182,9 @@ bool LeaderController::setFormationCallback(
     cluster_msgs::SetFormation::Request& req,
     cluster_msgs::SetFormation::Response& res) {
 
-  if (req.formation > cluster_msgs::LeaderCmd::FORMATION_TRIANGLE_RIGHT) {
+  if (req.formation > cluster_msgs::LeaderCmd::FORMATION_TRIANGLE) {
     res.success = false;
-    res.message = "Invalid formation. Valid: 0=COLUMN, 1=LINE, 2=TRIANGLE_LEFT, 3=TRIANGLE_RIGHT";
+    res.message = "Invalid formation. Valid: 0=COLUMN, 1=LINE, 2=CIRCLE_SHOW, 3=TRIANGLE";
     return true;
   }
 
@@ -191,6 +205,13 @@ void LeaderController::controlLoop(const ros::TimerEvent& event) {
   if (return_home_active_) {
     computeReturnHome();
     return;
+  }
+
+  if (current_mode_ != cluster_msgs::LeaderCmd::MODE_FORMATION &&
+      circle_show_was_active_) {
+    geometry_msgs::Twist zero_cmd;
+    cmd_vel_pub_.publish(zero_cmd);
+    circle_show_was_active_ = false;
   }
 
   // Compute target and publish LeaderCmd
@@ -259,6 +280,23 @@ void LeaderController::computeFormationTarget() {
   if (!self_odom_received_) return;
 
   auto leader_pose = cluster_common::odomToPose2D(latest_self_odom_);
+  const bool circle_show =
+      current_formation_ == cluster_msgs::LeaderCmd::FORMATION_CIRCLE_SHOW &&
+      !use_custom_offsets_;
+  geometry_msgs::Twist show_cmd;
+  if (circle_show) {
+    show_cmd.linear.x = cluster_common::clamp(
+        circle_show_radius_ * circle_show_angular_speed_,
+        0.0, max_linear_speed_);
+    show_cmd.angular.z = cluster_common::clamp(
+        circle_show_angular_speed_,
+        -max_angular_speed_, max_angular_speed_);
+    cmd_vel_pub_.publish(show_cmd);
+    circle_show_was_active_ = true;
+  } else if (circle_show_was_active_) {
+    cmd_vel_pub_.publish(show_cmd);
+    circle_show_was_active_ = false;
+  }
 
   // Get formation offset
   FormationOffset offset = use_custom_offsets_
@@ -277,10 +315,14 @@ void LeaderController::computeFormationTarget() {
   cached_leader_cmd_.offset_yaw = offset.yaw;
   bool teleop_fresh = teleop_cmd_received_ &&
       (ros::Time::now() - last_teleop_cmd_time_).toSec() < 0.3;
-  cached_leader_cmd_.leader_vx = teleop_fresh
+  cached_leader_cmd_.leader_vx = circle_show
+      ? show_cmd.linear.x
+      : teleop_fresh
       ? latest_teleop_cmd_.linear.x
       : latest_self_odom_.twist.twist.linear.x;
-  cached_leader_cmd_.leader_vyaw = teleop_fresh
+  cached_leader_cmd_.leader_vyaw = circle_show
+      ? show_cmd.angular.z
+      : teleop_fresh
       ? latest_teleop_cmd_.angular.z
       : latest_self_odom_.twist.twist.angular.z;
   cached_leader_cmd_.target_pose = target;
@@ -336,12 +378,41 @@ void LeaderController::checkSafety() {
       }
     }
   }
+  if (!follower_status_received_ && self_odom_received_ &&
+      (now - controller_start_time_).toSec() > 5.0) {
+    follower_lost = true;
+  }
+  if (follower3_status_received_) {
+    double dt = (now - last_follower3_status_time_).toSec();
+    if (dt > follower_lost_timeout_) {
+      follower_lost = true;
+    }
+  } else if (self_odom_received_) {
+    double elapsed = (now - ros::Time(
+        latest_self_odom_.header.stamp)).toSec();
+    if (elapsed > 5.0 && !follower3_status_received_) {
+      follower_lost = true;
+    }
+  }
+
+  if (!follower3_status_received_ && self_odom_received_ &&
+      (now - controller_start_time_).toSec() > 5.0) {
+    follower_lost = true;
+  }
 
   // Check formation error
-  if (current_mode_ == cluster_msgs::LeaderCmd::MODE_FORMATION &&
-      follower_status_received_) {
-    double error = latest_follower_status_.error_dist;
-    if (error > max_formation_error_) {
+  if (current_mode_ == cluster_msgs::LeaderCmd::MODE_FORMATION) {
+    double error = 0.0;
+    bool has_error = false;
+    if (follower_status_received_) {
+      error = std::max(error, latest_follower_status_.error_dist);
+      has_error = true;
+    }
+    if (follower3_status_received_) {
+      error = std::max(error, latest_follower3_status_.error_dist);
+      has_error = true;
+    }
+    if (has_error && error > max_formation_error_) {
       if (!error_exceeded_) {
         error_exceeded_ = true;
         error_start_time_ = now;
@@ -350,7 +421,7 @@ void LeaderController::checkSafety() {
                  error, max_formation_error_, max_error_duration_);
         current_mode_ = cluster_msgs::LeaderCmd::MODE_IDLE;
       }
-    } else {
+    } else if (has_error) {
       error_exceeded_ = false;
     }
   }
@@ -391,10 +462,13 @@ FormationOffset LeaderController::getFormationOffset(uint8_t formation_type) {
     case cluster_msgs::LeaderCmd::FORMATION_LINE:
       offset = {0.0, -0.8, 0.0};
       break;
-    case cluster_msgs::LeaderCmd::FORMATION_TRIANGLE_LEFT:
-      offset = {-0.8, 0.8, 0.0};
+    case cluster_msgs::LeaderCmd::FORMATION_CIRCLE_SHOW: {
+      const double phase = 2.0943951023931953;  // 120 degrees behind car1.
+      const double r = circle_show_radius_;
+      offset = {-r * std::sin(phase), r * (1.0 - std::cos(phase)), -phase};
       break;
-    case cluster_msgs::LeaderCmd::FORMATION_TRIANGLE_RIGHT:
+    }
+    case cluster_msgs::LeaderCmd::FORMATION_TRIANGLE:
       offset = {-0.8, -0.8, 0.0};
       break;
     default:

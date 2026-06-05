@@ -1,29 +1,65 @@
 <launch>
-  <!--
-    Shared-map follower controller.
-
-    Use this instead of follower_controller_node after both robots are localized
-    in the same /map frame by AMCL/SLAM.
-  -->
-  <arg name="enable_avoidance" default="false" />
+  <!-- Shared-map follower controllers for robot2 and robot3. -->
+  <arg name="enable_avoidance" default="true" />
 
   <node unless="$(arg enable_avoidance)"
         pkg="cluster_following" type="map_follower_controller_node"
-        name="map_follower_controller" output="screen">
+        name="map_follower_robot2" output="screen">
     <rosparam file="$(find cluster_bringup)/config/map_follower_params.yaml" />
+    <param name="follower_index" value="2" />
+    <param name="follower_frame" value="robot2/base_link" />
     <param name="cmd_vel_topic" value="/robot2/cmd_vel" />
+    <param name="status_topic" value="/robot2/follower_status" />
+  </node>
+
+  <node unless="$(arg enable_avoidance)"
+        pkg="cluster_following" type="map_follower_controller_node"
+        name="map_follower_robot3" output="screen">
+    <rosparam file="$(find cluster_bringup)/config/map_follower_params.yaml" />
+    <param name="follower_index" value="3" />
+    <param name="use_leader_offsets" value="false" />
+    <param name="follower_frame" value="robot3/base_link" />
+    <param name="cmd_vel_topic" value="/robot3/cmd_vel" />
+    <param name="status_topic" value="/robot3/follower_status" />
   </node>
 
   <node if="$(arg enable_avoidance)"
         pkg="cluster_following" type="map_follower_controller_node"
-        name="map_follower_controller" output="screen">
+        name="map_follower_robot2" output="screen">
     <rosparam file="$(find cluster_bringup)/config/map_follower_params.yaml" />
+    <param name="follower_index" value="2" />
+    <param name="follower_frame" value="robot2/base_link" />
     <param name="cmd_vel_topic" value="/robot2/cmd_vel_raw" />
+    <param name="status_topic" value="/robot2/follower_status" />
+  </node>
+
+  <node if="$(arg enable_avoidance)"
+        pkg="cluster_following" type="map_follower_controller_node"
+        name="map_follower_robot3" output="screen">
+    <rosparam file="$(find cluster_bringup)/config/map_follower_params.yaml" />
+    <param name="follower_index" value="3" />
+    <param name="use_leader_offsets" value="false" />
+    <param name="follower_frame" value="robot3/base_link" />
+    <param name="cmd_vel_topic" value="/robot3/cmd_vel_raw" />
+    <param name="status_topic" value="/robot3/follower_status" />
   </node>
 
   <node if="$(arg enable_avoidance)"
         pkg="cluster_following" type="cmd_safety_filter_node"
         name="robot2_cmd_safety_filter" output="screen">
     <rosparam file="$(find cluster_bringup)/config/cmd_safety_filter_params.yaml" />
+    <param name="peer_frame" value="robot3/base_link" />
+  </node>
+
+  <node if="$(arg enable_avoidance)"
+        pkg="cluster_following" type="cmd_safety_filter_node"
+        name="robot3_cmd_safety_filter" output="screen">
+    <rosparam file="$(find cluster_bringup)/config/cmd_safety_filter_params.yaml" />
+    <param name="input_cmd_topic" value="/robot3/cmd_vel_raw" />
+    <param name="output_cmd_topic" value="/robot3/cmd_vel" />
+    <param name="scan_topic" value="/robot3/scan" />
+    <param name="enable_topic" value="/robot2/avoidance_enabled" />
+    <param name="follower_frame" value="robot3/base_link" />
+    <param name="peer_frame" value="robot2/base_link" />
   </node>
 </launch>

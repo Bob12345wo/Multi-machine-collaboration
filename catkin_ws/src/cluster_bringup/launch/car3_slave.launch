@@ -1,0 +1,15 @@
+<launch>
+  <!-- One-command car3 startup for shared-map three-car testing. -->
+  <arg name="ros_ip" default="192.168.137.99" />
+  <arg name="lidar_port" default="/dev/ttyUSB0" />
+  <arg name="base_port" default="ttyTHS1" />
+
+  <include file="$(find cluster_bringup)/launch/car3_no_lidar.launch">
+    <arg name="ros_ip" value="$(arg ros_ip)" />
+    <arg name="base_port" value="$(arg base_port)" />
+  </include>
+
+  <include file="$(find cluster_bringup)/launch/car3_lidar.launch">
+    <arg name="port_name" value="$(arg lidar_port)" />
+  </include>
+</launch>

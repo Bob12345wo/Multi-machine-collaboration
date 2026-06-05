@@ -20,6 +20,7 @@
     <include file="$(find cluster_bringup)/launch/multi_amcl.launch">
       <arg name="robot1_scan" value="/robot1/scan" />
       <arg name="robot2_scan" value="/robot2/scan" />
+      <arg name="robot3_scan" value="/robot3/scan" />
     </include>
   </group>
 

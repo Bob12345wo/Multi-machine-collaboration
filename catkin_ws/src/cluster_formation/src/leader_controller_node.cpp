@@ -1,4 +1,4 @@
-echo $ROS_PACKAGE_PATH#include <ros/ros.h>
+#include <ros/ros.h>
 #include "cluster_formation/leader_controller.h"
 
 int main(int argc, char** argv) {

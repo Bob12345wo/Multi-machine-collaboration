@@ -22,10 +22,14 @@ public:
     pnh_.param<std::string>("leader_frame", leader_frame_, "robot1/base_link");
     pnh_.param<std::string>("follower_frame", follower_frame_, "robot2/base_link");
     pnh_.param<std::string>("cmd_vel_topic", cmd_vel_topic_, "/robot2/cmd_vel");
+    pnh_.param<std::string>("status_topic", status_topic_, "/robot2/follower_status");
     pnh_.param<std::string>("control_mode_topic", control_mode_topic_,
                             "/robot2/follower_control_mode");
     pnh_.param<std::string>("control_mode", control_mode_, "body_orbit");
     pnh_.param("use_leader_offsets", use_leader_offsets_, true);
+    pnh_.param("follower_index", follower_index_, 2);
+    pnh_.param("formation_spacing", formation_spacing_, 0.8);
+    pnh_.param("circle_show_radius", circle_show_radius_, 0.5);
     pnh_.param("offset_x", offset_x_, -0.8);
     pnh_.param("offset_y", offset_y_, 0.0);
     pnh_.param("loop_rate", loop_rate_, 20.0);
@@ -72,8 +76,7 @@ public:
     control_mode_sub_ = nh_.subscribe(control_mode_topic_, 5,
         &MapFollowerController::controlModeCallback, this);
     cmd_vel_pub_ = nh_.advertise<geometry_msgs::Twist>(cmd_vel_topic_, 10);
-    status_pub_ = nh_.advertise<cluster_msgs::FollowerStatus>(
-        "/robot2/follower_status", 10);
+    status_pub_ = nh_.advertise<cluster_msgs::FollowerStatus>(status_topic_, 10);
 
     control_timer_ = nh_.createTimer(ros::Duration(1.0 / loop_rate_),
         &MapFollowerController::controlLoop, this);
@@ -81,6 +84,12 @@ public:
 
 private:
   struct Pose2D {
+    double x;
+    double y;
+    double yaw;
+  };
+
+  struct FormationOffset {
     double x;
     double y;
     double yaw;
@@ -122,6 +131,38 @@ private:
     }
   }
 
+  FormationOffset getFollowerOffset(uint8_t formation) const {
+    if (follower_index_ == 2 && use_leader_offsets_) {
+      return {latest_leader_cmd_.offset_x, latest_leader_cmd_.offset_y,
+              latest_leader_cmd_.offset_yaw};
+    }
+
+    const double d = formation_spacing_;
+    if (follower_index_ == 3) {
+      switch (formation) {
+        case cluster_msgs::LeaderCmd::FORMATION_COLUMN:
+          return {-2.0 * d, 0.0, 0.0};
+        case cluster_msgs::LeaderCmd::FORMATION_LINE:
+          return {0.0, d, 0.0};
+        case cluster_msgs::LeaderCmd::FORMATION_CIRCLE_SHOW: {
+          const double phase = 4.1887902047863905;  // 240 degrees behind car1.
+          const double r = circle_show_radius_;
+          return {-r * std::sin(phase), r * (1.0 - std::cos(phase)), -phase};
+        }
+        case cluster_msgs::LeaderCmd::FORMATION_TRIANGLE:
+          return {-d, d, 0.0};
+        default:
+          return {-2.0 * d, 0.0, 0.0};
+      }
+    }
+
+    if (use_leader_offsets_) {
+      return {latest_leader_cmd_.offset_x, latest_leader_cmd_.offset_y,
+              latest_leader_cmd_.offset_yaw};
+    }
+    return {offset_x_, offset_y_, 0.0};
+  }
+
   void controlLoop(const ros::TimerEvent&) {
     if (!leader_cmd_received_ ||
         (ros::Time::now() - last_leader_cmd_time_).toSec() > 0.5) {
@@ -146,12 +187,10 @@ private:
       return;
     }
 
-    double active_offset_x = offset_x_;
-    double active_offset_y = offset_y_;
-    if (use_leader_offsets_) {
-      active_offset_x = latest_leader_cmd_.offset_x;
-      active_offset_y = latest_leader_cmd_.offset_y;
-    }
+    const FormationOffset active_offset = getFollowerOffset(latest_leader_cmd_.formation);
+    const double active_offset_x = active_offset.x;
+    const double active_offset_y = active_offset.y;
+    const double active_offset_yaw = active_offset.yaw;
 
     if (control_mode_changed_) {
       if (control_mode_ == "wheeltec_global") {
@@ -173,7 +212,7 @@ private:
     const double sin_l = std::sin(leader.yaw);
     double target_x = leader.x + active_offset_x * cos_l - active_offset_y * sin_l;
     double target_y = leader.y + active_offset_x * sin_l + active_offset_y * cos_l;
-    double target_yaw = leader.yaw;
+    double target_yaw = cluster_common::normalizeAngle(leader.yaw + active_offset_yaw);
 
     const double leader_vx = latest_leader_cmd_.leader_vx;
     const double leader_wz = latest_leader_cmd_.leader_vyaw;
@@ -188,7 +227,8 @@ private:
         std::fabs(leader_vx) > min_linear_speed_) {
       const double radius = leader_vx / leader_wz;
       target_yaw = cluster_common::normalizeAngle(
-          leader.yaw + std::atan2(active_offset_y, active_offset_x + radius));
+          leader.yaw + active_offset_yaw +
+          std::atan2(active_offset_y, active_offset_x + radius));
     }
 
     Pose2D final_target{target_x, target_y, target_yaw};
@@ -296,9 +336,9 @@ private:
     cmd_vel_pub_.publish(cmd);
     if (debug_enabled_) {
       ROS_INFO_THROTTLE(debug_period_,
-          "[FOLLOW_DBG] mode=%s form=%u offset(x=%.3f,y=%.3f) leader(x=%.3f,y=%.3f,yaw=%.3f,vx=%.3f,wz=%.3f) follower(x=%.3f,y=%.3f,yaw=%.3f) target(final_x=%.3f,final_y=%.3f,raw_x=%.3f,raw_y=%.3f,raw_yaw=%.3f,x=%.3f,y=%.3f,yaw=%.3f,detour=%d) err(fwd=%.3f,lat=%.3f,yaw=%.3f,dist=%.3f,heading=%.3f,weight=%.3f) cmd_raw(vx=%.3f,wz=%.3f) cmd_out(vx=%.3f,wz=%.3f)",
+          "[FOLLOW_DBG] mode=%s form=%u offset(x=%.3f,y=%.3f,yaw=%.3f) leader(x=%.3f,y=%.3f,yaw=%.3f,vx=%.3f,wz=%.3f) follower(x=%.3f,y=%.3f,yaw=%.3f) target(final_x=%.3f,final_y=%.3f,raw_x=%.3f,raw_y=%.3f,raw_yaw=%.3f,x=%.3f,y=%.3f,yaw=%.3f,detour=%d) err(fwd=%.3f,lat=%.3f,yaw=%.3f,dist=%.3f,heading=%.3f,weight=%.3f) cmd_raw(vx=%.3f,wz=%.3f) cmd_out(vx=%.3f,wz=%.3f)",
           control_mode_.c_str(), latest_leader_cmd_.formation,
-          active_offset_x, active_offset_y,
+          active_offset_x, active_offset_y, active_offset_yaw,
           leader.x, leader.y, leader.yaw, leader_vx, leader_wz,
           follower.x, follower.y, follower.yaw,
           final_target.x, final_target.y,
@@ -448,9 +488,13 @@ private:
   std::string leader_frame_;
   std::string follower_frame_;
   std::string cmd_vel_topic_;
+  std::string status_topic_;
   std::string control_mode_topic_;
   std::string control_mode_;
 
+  int follower_index_;
+  double formation_spacing_;
+  double circle_show_radius_;
   double offset_x_;
   double offset_y_;
   double loop_rate_;

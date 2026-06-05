@@ -8,6 +8,7 @@ follower_frame: robot2/base_link
 cmd_vel_topic: /robot2/cmd_vel
 control_mode: body_orbit
 use_leader_offsets: true
+circle_show_radius: 0.5
 
 # Desired follower position in leader body frame.
 # body_orbit uses the leader body frame: X forward, Y left.

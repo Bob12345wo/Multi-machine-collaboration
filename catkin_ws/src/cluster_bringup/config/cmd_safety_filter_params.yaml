@@ -1,4 +1,4 @@
-# Safety filter for robot2 command velocity.
+# Safety filter for follower command velocity.
 # Input is the formation controller command. Output goes to the real base.
 input_cmd_topic: /robot2/cmd_vel_raw
 output_cmd_topic: /robot2/cmd_vel
@@ -6,8 +6,10 @@ scan_topic: /robot2/scan
 enable_topic: /robot2/avoidance_enabled
 enabled: true
 robot_keepout_enabled: true
+peer_keepout_enabled: true
 leader_frame: robot1/base_link
 follower_frame: robot2/base_link
+peer_frame: ''
 
 loop_rate: 20
 cmd_timeout: 0.5
@@ -37,11 +39,20 @@ turn_gain: 0.35
 danger_reverse_speed: -0.06
 
 # Map/TF based inter-robot protection. This does not depend on lidar returns,
-# so car2 can still avoid driving into car1 when both lidars are at the same height.
+# so followers can still avoid driving into another robot when the lidars are
+# at the same height.
 robot_safe_distance: 0.55
 robot_danger_distance: 0.50
 robot_slowdown_gain: 1.0
 robot_turn_gain: 0.0
+
+# Peer follower keepout, used for robot2 <-> robot3 protection. Keep this
+# below the normal 0.8m formation spacing so COLUMN does not get stuck.
+peer_safe_distance: 0.75
+peer_danger_distance: 0.60
+peer_slowdown_gain: 1.0
+peer_turn_gain: 0.0
+peer_danger_wz_scale: 0.3
 
 # Debug output for collision analysis. Disable after tuning.
 debug_enabled: true

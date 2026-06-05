@@ -14,8 +14,8 @@ Keys:
   v      : FOLLOW mode
   1      : COLUMN formation
   2      : LINE formation
-  3      : TRIANGLE_LEFT formation
-  4      : TRIANGLE_RIGHT formation
+  3      : CIRCLE_SHOW formation
+  4      : TRIANGLE formation
   5      : switch follower control mode
   6      : toggle avoidance filter
   0      : return car1 to startup home pose
@@ -88,8 +88,8 @@ class TeleopKeyboard:
         print("  Formations:")
         print("    1    : COLUMN")
         print("    2    : LINE")
-        print("    3    : TRIANGLE_LEFT")
-        print("    4    : TRIANGLE_RIGHT")
+        print("    3    : CIRCLE_SHOW")
+        print("    4    : TRIANGLE")
         print("    5    : switch follower mode (body_orbit / wheeltec_global)")
         print("    6    : toggle avoidance filter")
         print("    0    : return car1 to startup home pose")
@@ -127,7 +127,7 @@ class TeleopKeyboard:
         try:
             resp = self.set_formation(formation=formation)
             if resp.success:
-                names = {0: "COLUMN", 1: "LINE", 2: "TRIANGLE_LEFT", 3: "TRIANGLE_RIGHT"}
+                names = {0: "COLUMN", 1: "LINE", 2: "CIRCLE_SHOW", 3: "TRIANGLE"}
                 rospy.loginfo("Formation: %s", names.get(formation, "UNKNOWN"))
             else:
                 rospy.logwarn("SetFormation failed: %s", resp.message)

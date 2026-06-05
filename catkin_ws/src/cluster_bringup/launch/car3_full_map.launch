@@ -1,0 +1,13 @@
+<launch>
+  <!-- Complete car3-side startup for shared-map formation. -->
+  <arg name="ros_ip" default="192.168.137.99" />
+  <arg name="lidar_port" default="/dev/ttyUSB0" />
+
+  <include file="$(find cluster_bringup)/launch/car3_no_lidar.launch">
+    <arg name="ros_ip" value="$(arg ros_ip)" />
+  </include>
+
+  <include file="$(find cluster_bringup)/launch/car3_lidar.launch">
+    <arg name="port_name" value="$(arg lidar_port)" />
+  </include>
+</launch>

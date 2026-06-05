@@ -31,6 +31,7 @@ private:
   void selfOdomCallback(const nav_msgs::Odometry::ConstPtr& msg);
   void followerOdomCallback(const nav_msgs::Odometry::ConstPtr& msg);
   void followerStatusCallback(const cluster_msgs::FollowerStatus::ConstPtr& msg);
+  void follower3StatusCallback(const cluster_msgs::FollowerStatus::ConstPtr& msg);
   void teleopVelCallback(const geometry_msgs::Twist::ConstPtr& msg);
   void returnHomeCallback(const std_msgs::Bool::ConstPtr& msg);
 
@@ -64,6 +65,7 @@ private:
   ros::Subscriber self_odom_sub_;
   ros::Subscriber follower_odom_sub_;
   ros::Subscriber follower_status_sub_;
+  ros::Subscriber follower3_status_sub_;
   ros::Subscriber teleop_vel_sub_;
   ros::Subscriber return_home_sub_;
 
@@ -82,10 +84,12 @@ private:
   nav_msgs::Odometry latest_self_odom_;
   nav_msgs::Odometry latest_follower_odom_;
   cluster_msgs::FollowerStatus latest_follower_status_;
+  cluster_msgs::FollowerStatus latest_follower3_status_;
   geometry_msgs::Twist latest_teleop_cmd_;
   bool self_odom_received_;
   bool follower_odom_received_;
   bool follower_status_received_;
+  bool follower3_status_received_;
   bool teleop_cmd_received_;
   bool home_pose_received_;
   bool return_home_active_;
@@ -95,14 +99,17 @@ private:
   uint8_t current_mode_;
   uint8_t current_formation_;
   FormationOffset current_offset_;
+  bool circle_show_was_active_;
 
   // Safety
   double follower_lost_timeout_;
   double max_formation_error_;
   double max_error_duration_;  // seconds of > max_error before stopping
   ros::Time error_start_time_;
+  ros::Time controller_start_time_;
   bool error_exceeded_;
   ros::Time last_follower_status_time_;
+  ros::Time last_follower3_status_time_;
   ros::Time last_teleop_cmd_time_;
 
   // Parameters
@@ -114,6 +121,8 @@ private:
   double return_home_yaw_tolerance_;
   double return_home_k_v_;
   double return_home_k_w_;
+  double circle_show_radius_;
+  double circle_show_angular_speed_;
 
   // LeaderCmd cache
   cluster_msgs::LeaderCmd cached_leader_cmd_;

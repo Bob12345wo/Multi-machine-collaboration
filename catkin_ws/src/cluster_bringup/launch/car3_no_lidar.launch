@@ -1,0 +1,49 @@
+<launch>
+  <arg name="ros_ip" default="192.168.137.99" />
+  <arg name="base_port" default="ttyTHS1" />
+
+  <env name="ROS_IP" value="$(arg ros_ip)" />
+
+  <!--
+    car3 base driver is intentionally launched without a ROS namespace.
+    On this car the stock limo_base node publishes /odom and /limo_status
+    correctly in the global namespace, while the namespaced include opens the
+    serial port but does not publish /robot3/odom. Relay the proven stock
+    topics into robot3 namespaced topics for AMCL and shared-map TF.
+  -->
+  <include file="$(find limo_base)/launch/limo_base.launch">
+    <arg name="port_name" value="$(arg base_port)" />
+    <arg name="use_mcnamu" value="true" />
+    <arg name="pub_odom_tf" value="false" />
+  </include>
+
+  <node pkg="topic_tools" type="relay" name="robot3_odom_relay"
+        args="/odom /robot3/odom" output="screen" />
+  <node pkg="topic_tools" type="relay" name="robot3_limo_status_relay"
+        args="/limo_status /robot3/limo_status" output="screen" />
+  <node pkg="topic_tools" type="relay" name="robot3_imu_relay"
+        args="/imu /robot3/imu" output="screen" />
+  <node pkg="topic_tools" type="relay" name="robot3_imu_data_relay"
+        args="/imu_data /robot3/imu_data" output="screen" />
+  <node pkg="topic_tools" type="relay" name="robot3_vo_relay"
+        args="/vo /robot3/vo" output="screen" />
+  <node pkg="topic_tools" type="relay" name="robot3_cmd_vel_relay"
+        args="/robot3/cmd_vel /cmd_vel" output="screen" />
+
+  <group ns="robot3">
+    <node pkg="robot_pose_ekf" name="robot_pose_ekf" type="robot_pose_ekf">
+      <param name="output_frame" value="odom" />
+      <param name="base_footprint_frame" value="base_link" />
+    </node>
+
+    <node pkg="tf" type="static_transform_publisher"
+          name="base_link_to_camera_link"
+          args="0.105 0 0.1 0.0 0.0 0.0 base_link camera_link 10" />
+    <node pkg="tf" type="static_transform_publisher"
+          name="base_link_to_imu_link"
+          args="0.0 0.0 0.0 0.0 0.0 0.0 base_link imu_link 10" />
+    <node pkg="tf" type="static_transform_publisher"
+          name="base_link_to_lidar_frame"
+          args="0.0 0.0 0.08 3.14 0.0 0.0 base_link base_laser 10" />
+  </group>
+</launch>
