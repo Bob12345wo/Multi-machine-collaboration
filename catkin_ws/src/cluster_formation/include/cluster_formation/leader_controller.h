@@ -6,6 +6,8 @@
 #include <nav_msgs/Odometry.h>
 #include <std_msgs/Bool.h>
 #include <std_msgs/String.h>
+#include <tf2_ros/buffer.h>
+#include <tf2_ros/transform_listener.h>
 
 #include "cluster_msgs/LeaderCmd.h"
 #include "cluster_msgs/FollowerStatus.h"
@@ -33,6 +35,7 @@ private:
   void followerStatusCallback(const cluster_msgs::FollowerStatus::ConstPtr& msg);
   void follower3StatusCallback(const cluster_msgs::FollowerStatus::ConstPtr& msg);
   void teleopVelCallback(const geometry_msgs::Twist::ConstPtr& msg);
+  void navVelCallback(const geometry_msgs::Twist::ConstPtr& msg);
   void returnHomeCallback(const std_msgs::Bool::ConstPtr& msg);
 
   // Service callbacks
@@ -54,12 +57,22 @@ private:
                                         const FormationOffset& offset);
 
   // Helpers
+  bool lookupSelfMapPose(cluster_common::Pose2D& pose);
+  bool ensureHomePose();
   FormationOffset getFormationOffset(uint8_t formation_type);
   void updatePIDFromReconfig();
+  void publishCmdVel(const geometry_msgs::Twist& cmd,
+                     bool reset_filter = false,
+                     bool smooth = true);
+  void updateAdaptiveFormationSpeedScale();
+  geometry_msgs::Twist applyAdaptiveFormationSpeed(
+      const geometry_msgs::Twist& cmd) const;
 
   // Node handles
   ros::NodeHandle nh_;
   ros::NodeHandle pnh_;
+  tf2_ros::Buffer tf_buffer_;
+  tf2_ros::TransformListener tf_listener_;
 
   // Subscribers
   ros::Subscriber self_odom_sub_;
@@ -67,6 +80,7 @@ private:
   ros::Subscriber follower_status_sub_;
   ros::Subscriber follower3_status_sub_;
   ros::Subscriber teleop_vel_sub_;
+  ros::Subscriber nav_vel_sub_;
   ros::Subscriber return_home_sub_;
 
   // Publishers
@@ -86,6 +100,7 @@ private:
   cluster_msgs::FollowerStatus latest_follower_status_;
   cluster_msgs::FollowerStatus latest_follower3_status_;
   geometry_msgs::Twist latest_teleop_cmd_;
+  geometry_msgs::Twist last_cmd_vel_;
   bool self_odom_received_;
   bool follower_odom_received_;
   bool follower_status_received_;
@@ -98,10 +113,13 @@ private:
   // State
   uint8_t current_mode_;
   uint8_t current_formation_;
+  uint8_t last_non_circle_formation_;
   FormationOffset current_offset_;
   bool circle_show_was_active_;
 
   // Safety
+  bool follower_watchdog_enabled_;
+  bool formation_error_watchdog_enabled_;
   double follower_lost_timeout_;
   double max_formation_error_;
   double max_error_duration_;  // seconds of > max_error before stopping
@@ -111,6 +129,7 @@ private:
   ros::Time last_follower_status_time_;
   ros::Time last_follower3_status_time_;
   ros::Time last_teleop_cmd_time_;
+  ros::Time last_cmd_vel_time_;
 
   // Parameters
   double loop_rate_;
@@ -121,8 +140,25 @@ private:
   double return_home_yaw_tolerance_;
   double return_home_k_v_;
   double return_home_k_w_;
+  double return_home_max_linear_speed_;
+  double return_home_max_angular_speed_;
+  bool return_home_use_map_;
+  std::string map_frame_;
+  std::string self_frame_;
   double circle_show_radius_;
   double circle_show_angular_speed_;
+  double cmd_filter_alpha_;
+  double cmd_slew_linear_;
+  double cmd_slew_angular_;
+  bool adaptive_formation_speed_enabled_;
+  double formation_full_speed_error_;
+  double formation_min_speed_error_;
+  double formation_min_speed_scale_;
+  double formation_status_timeout_;
+  double formation_angular_scale_floor_;
+  double formation_speed_attack_alpha_;
+  double formation_speed_release_alpha_;
+  double adaptive_formation_speed_scale_;
 
   // LeaderCmd cache
   cluster_msgs::LeaderCmd cached_leader_cmd_;

@@ -3,8 +3,11 @@
 #include <string>
 
 #include <ros/ros.h>
+#include <ros/transport_hints.h>
+#include <geometry_msgs/PoseStamped.h>
 #include <geometry_msgs/Twist.h>
 #include <geometry_msgs/TransformStamped.h>
+#include <sensor_msgs/Imu.h>
 #include <std_msgs/String.h>
 #include <tf2/utils.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
@@ -21,8 +24,15 @@ public:
     pnh_.param<std::string>("map_frame", map_frame_, "map");
     pnh_.param<std::string>("leader_frame", leader_frame_, "robot1/base_link");
     pnh_.param<std::string>("follower_frame", follower_frame_, "robot2/base_link");
+    pnh_.param<std::string>("leader_odom_frame", leader_odom_frame_, "robot1/odom");
+    pnh_.param<std::string>("follower_odom_frame", follower_odom_frame_, "robot2/odom");
     pnh_.param<std::string>("cmd_vel_topic", cmd_vel_topic_, "/robot2/cmd_vel");
     pnh_.param<std::string>("status_topic", status_topic_, "/robot2/follower_status");
+    pnh_.param<std::string>("assigned_goal_topic", assigned_goal_topic_, "");
+    pnh_.param<std::string>("leader_imu_topic", leader_imu_topic_,
+                            "/robot1/imu_fixed");
+    pnh_.param<std::string>("follower_imu_topic", follower_imu_topic_,
+                            "/robot2/imu_fixed");
     pnh_.param<std::string>("control_mode_topic", control_mode_topic_,
                             "/robot2/follower_control_mode");
     pnh_.param<std::string>("control_mode", control_mode_, "body_orbit");
@@ -30,6 +40,8 @@ public:
     pnh_.param("follower_index", follower_index_, 2);
     pnh_.param("formation_spacing", formation_spacing_, 0.8);
     pnh_.param("circle_show_radius", circle_show_radius_, 0.5);
+    pnh_.param("use_assigned_goal", use_assigned_goal_, true);
+    pnh_.param("assigned_goal_timeout", assigned_goal_timeout_, 0.7);
     pnh_.param("offset_x", offset_x_, -0.8);
     pnh_.param("offset_y", offset_y_, 0.0);
     pnh_.param("loop_rate", loop_rate_, 20.0);
@@ -42,6 +54,7 @@ public:
     pnh_.param("k_v", k_v_, 0.9);
     pnh_.param("k_l", k_l_, 0.8);
     pnh_.param("k_a", k_a_, 0.7);
+    pnh_.param("yaw_error_linear_limit", yaw_error_linear_limit_, 1.2);
     pnh_.param("k_heading", k_heading_, 1.0);
     pnh_.param("k_approach_heading", k_approach_heading_, 1.4);
     pnh_.param("leader_vx_gain", leader_vx_gain_, 1.0);
@@ -49,6 +62,8 @@ public:
     pnh_.param("orbit_v_gain", orbit_v_gain_, 0.8);
     pnh_.param("target_filter_alpha", target_filter_alpha_, 0.35);
     pnh_.param("cmd_filter_alpha", cmd_filter_alpha_, 0.45);
+    pnh_.param("near_target_speed_gain", near_target_speed_gain_, 0.80);
+    pnh_.param("near_target_max_speed", near_target_max_speed_, 0.22);
     pnh_.param("heading_lookahead", heading_lookahead_, 0.45);
     pnh_.param("max_target_jump", max_target_jump_, 0.8);
     pnh_.param("final_align_distance", final_align_distance_, 0.35);
@@ -65,18 +80,51 @@ public:
     pnh_.param("allow_orbit_reverse", allow_orbit_reverse_, true);
     pnh_.param("debug_enabled", debug_enabled_, false);
     pnh_.param("debug_period", debug_period_, 0.5);
+    pnh_.param("use_imu_yaw_assist", use_imu_yaw_assist_, false);
+    pnh_.param("imu_max_age", imu_max_age_, 0.4);
+    pnh_.param("imu_offset_alpha", imu_offset_alpha_, 0.0);
+    pnh_.param("tf_max_age", tf_max_age_, 1.0);
+    pnh_.param("map_tf_future_tolerance", map_tf_future_tolerance_, 1.2);
+    pnh_.param("enable_odom_prediction", enable_odom_prediction_, true);
+    pnh_.param("prediction_max_age", prediction_max_age_, 6.0);
+    pnh_.param("prediction_odom_max_age", prediction_odom_max_age_, 1.0);
+    pnh_.param("final_yaw_distance", final_yaw_distance_, 0.22);
+    pnh_.param("final_yaw_gain_scale", final_yaw_gain_scale_, 0.25);
+    pnh_.param("disable_final_spin", disable_final_spin_, false);
+    pnh_.param("settle_pos_tolerance", settle_pos_tolerance_, 0.10);
+    pnh_.param("settle_release_distance", settle_release_distance_, 0.18);
+    pnh_.param("settle_yaw_tolerance", settle_yaw_tolerance_, 0.18);
+    pnh_.param("settle_yaw_release", settle_yaw_release_, 0.35);
+    pnh_.param("final_spin_max_angular_speed", final_spin_max_angular_speed_, 0.28);
+    pnh_.param("final_yaw_align_max_error", final_yaw_align_max_error_, 0.9);
+    pnh_.param("final_yaw_align_timeout", final_yaw_align_timeout_, 5.0);
+    pnh_.param("static_yaw_blend_distance", static_yaw_blend_distance_, 0.10);
     pnh_.param("path_keepout_enabled", path_keepout_enabled_, true);
     pnh_.param("path_keepout_radius", path_keepout_radius_, 0.70);
     pnh_.param("path_detour_radius", path_detour_radius_, 0.85);
     pnh_.param("path_detour_step", path_detour_step_, 0.55);
     pnh_.param("path_detour_goal_tolerance", path_detour_goal_tolerance_, 0.18);
 
-    leader_cmd_sub_ = nh_.subscribe("/robot1/leader_cmd", 10,
+    leader_cmd_sub_ = nh_.subscribe("/robot1/leader_cmd", 1,
         &MapFollowerController::leaderCmdCallback, this);
-    control_mode_sub_ = nh_.subscribe(control_mode_topic_, 5,
+    if (use_assigned_goal_ && !assigned_goal_topic_.empty()) {
+      assigned_goal_sub_ = nh_.subscribe(assigned_goal_topic_, 1,
+          &MapFollowerController::assignedGoalCallback, this);
+    }
+    control_mode_sub_ = nh_.subscribe(control_mode_topic_, 1,
         &MapFollowerController::controlModeCallback, this);
-    cmd_vel_pub_ = nh_.advertise<geometry_msgs::Twist>(cmd_vel_topic_, 10);
-    status_pub_ = nh_.advertise<cluster_msgs::FollowerStatus>(status_topic_, 10);
+    if (use_imu_yaw_assist_) {
+      leader_imu_sub_ = nh_.subscribe<sensor_msgs::Imu>(leader_imu_topic_, 1,
+          &MapFollowerController::leaderImuCallback, this,
+          ros::TransportHints().tcpNoDelay());
+      follower_imu_sub_ = nh_.subscribe<sensor_msgs::Imu>(follower_imu_topic_, 1,
+          &MapFollowerController::followerImuCallback, this,
+          ros::TransportHints().tcpNoDelay());
+      ROS_INFO("IMU yaw assist enabled: leader=%s follower=%s",
+               leader_imu_topic_.c_str(), follower_imu_topic_.c_str());
+    }
+    cmd_vel_pub_ = nh_.advertise<geometry_msgs::Twist>(cmd_vel_topic_, 1);
+    status_pub_ = nh_.advertise<cluster_msgs::FollowerStatus>(status_topic_, 1);
 
     control_timer_ = nh_.createTimer(ros::Duration(1.0 / loop_rate_),
         &MapFollowerController::controlLoop, this);
@@ -95,10 +143,31 @@ private:
     double yaw;
   };
 
+  struct PoseCache {
+    bool valid{false};
+    Pose2D map_pose{0.0, 0.0, 0.0};
+    Pose2D odom_pose{0.0, 0.0, 0.0};
+    ros::Time stamp;
+  };
+
+  struct ImuYawCache {
+    bool received{false};
+    bool aligned{false};
+    double imu_yaw{0.0};
+    double map_offset{0.0};
+    ros::Time stamp;
+  };
+
   void leaderCmdCallback(const cluster_msgs::LeaderCmd::ConstPtr& msg) {
     latest_leader_cmd_ = *msg;
     leader_cmd_received_ = true;
     last_leader_cmd_time_ = ros::Time::now();
+  }
+
+  void assignedGoalCallback(const geometry_msgs::PoseStamped::ConstPtr& msg) {
+    latest_assigned_goal_ = *msg;
+    assigned_goal_received_ = true;
+    last_assigned_goal_time_ = ros::Time::now();
   }
 
   void controlModeCallback(const std_msgs::String::ConstPtr& msg) {
@@ -112,23 +181,215 @@ private:
       control_mode_ = msg->data;
       control_mode_changed_ = true;
       target_initialized_ = false;
+      final_yaw_active_ = false;
+      final_yaw_timed_out_ = false;
     }
   }
 
-  bool lookupPose(const std::string& frame, Pose2D& pose) {
+  void leaderImuCallback(const sensor_msgs::Imu::ConstPtr& msg) {
+    updateImuYaw(*msg, leader_imu_);
+  }
+
+  void followerImuCallback(const sensor_msgs::Imu::ConstPtr& msg) {
+    updateImuYaw(*msg, follower_imu_);
+  }
+
+  void updateImuYaw(const sensor_msgs::Imu& msg, ImuYawCache& cache) {
+    const geometry_msgs::Quaternion& q = msg.orientation;
+    const double norm = q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w;
+    if (!std::isfinite(norm) || norm < 1e-9) {
+      return;
+    }
+    cache.imu_yaw = tf2::getYaw(q);
+    // Use local receive time for freshness. In the multi-car setup IMU header
+    // stamps are produced on different computers and can drift enough to trip
+    // the controller even while messages are arriving normally.
+    cache.stamp = ros::Time::now();
+    cache.received = true;
+  }
+
+  void applyImuYawAssist(const std::string& label,
+                         ImuYawCache& imu,
+                         Pose2D& pose) {
+    if (!use_imu_yaw_assist_ || !imuYawFresh(label, imu)) {
+      return;
+    }
+
+    const double measured_offset =
+        cluster_common::normalizeAngle(pose.yaw - imu.imu_yaw);
+    if (!imu.aligned) {
+      imu.map_offset = measured_offset;
+      imu.aligned = true;
+      ROS_INFO("%s IMU yaw assist aligned for %s: map_offset=%.3f rad",
+               ros::this_node::getName().c_str(), label.c_str(), imu.map_offset);
+    } else if (imu_offset_alpha_ > 0.0) {
+      const double offset_err =
+          cluster_common::normalizeAngle(measured_offset - imu.map_offset);
+      if (std::fabs(offset_err) < 0.25) {
+        const double alpha = cluster_common::clamp(imu_offset_alpha_, 0.0, 1.0);
+        imu.map_offset =
+            cluster_common::normalizeAngle(imu.map_offset + alpha * offset_err);
+      }
+    }
+
+    pose.yaw = cluster_common::normalizeAngle(imu.imu_yaw + imu.map_offset);
+  }
+
+  bool imuYawFresh(const std::string& label, const ImuYawCache& imu) const {
+    if (!use_imu_yaw_assist_ || !imu.received) {
+      return false;
+    }
+    const double age = (ros::Time::now() - imu.stamp).toSec();
+    if (age > imu_max_age_ || age < -0.2) {
+      ROS_WARN_THROTTLE(3.0,
+          "%s IMU yaw assist stale for %s: age %.2fs, using TF yaw",
+          ros::this_node::getName().c_str(), label.c_str(), age);
+      return false;
+    }
+    return true;
+  }
+
+  void applyPairedImuYawAssist(Pose2D& leader, Pose2D& follower) {
+    if (!use_imu_yaw_assist_) {
+      return;
+    }
+    const bool leader_fresh = imuYawFresh("leader", leader_imu_);
+    const bool follower_fresh = imuYawFresh("follower", follower_imu_);
+    if (!leader_fresh || !follower_fresh) {
+      ROS_WARN_THROTTLE(3.0,
+          "%s IMU yaw assist skipped this cycle: leader_fresh=%d follower_fresh=%d",
+          ros::this_node::getName().c_str(),
+          leader_fresh ? 1 : 0, follower_fresh ? 1 : 0);
+      return;
+    }
+    applyImuYawAssist("leader", leader_imu_, leader);
+    applyImuYawAssist("follower", follower_imu_, follower);
+  }
+
+  bool lookupOdomPose(const std::string& odom_frame,
+                      const std::string& base_frame,
+                      Pose2D& pose,
+                      ros::Time& stamp) {
     try {
       geometry_msgs::TransformStamped tf =
-          tf_buffer_.lookupTransform(map_frame_, frame, ros::Time(0),
-                                     ros::Duration(0.05));
+          tf_buffer_.lookupTransform(odom_frame, base_frame, ros::Time(0),
+                                     ros::Duration(0.02));
       pose.x = tf.transform.translation.x;
       pose.y = tf.transform.translation.y;
       pose.yaw = tf2::getYaw(tf.transform.rotation);
+      stamp = tf.header.stamp;
+      if (prediction_odom_max_age_ > 0.0 && !stamp.isZero()) {
+        const double age = (ros::Time::now() - stamp).toSec();
+        if (age > prediction_odom_max_age_ || age < -0.2) {
+          return false;
+        }
+      }
+      return true;
+    } catch (const tf2::TransformException&) {
+      return false;
+    }
+  }
+
+  bool predictPoseFromOdom(const std::string& frame,
+                           const std::string& odom_frame,
+                           const PoseCache& cache,
+                           Pose2D& pose) {
+    if (!enable_odom_prediction_ || !cache.valid) {
+      return false;
+    }
+    const double cache_age = (ros::Time::now() - cache.stamp).toSec();
+    if (cache_age > prediction_max_age_ || cache_age < -0.2) {
+      return false;
+    }
+
+    Pose2D current_odom;
+    ros::Time odom_stamp;
+    if (!lookupOdomPose(odom_frame, frame, current_odom, odom_stamp)) {
+      return false;
+    }
+
+    const double dx_odom = current_odom.x - cache.odom_pose.x;
+    const double dy_odom = current_odom.y - cache.odom_pose.y;
+    const double yaw_delta =
+        cluster_common::normalizeAngle(current_odom.yaw - cache.odom_pose.yaw);
+    const double map_from_odom_yaw =
+        cluster_common::normalizeAngle(cache.map_pose.yaw - cache.odom_pose.yaw);
+    const double c = std::cos(map_from_odom_yaw);
+    const double s = std::sin(map_from_odom_yaw);
+
+    pose.x = cache.map_pose.x + dx_odom * c - dy_odom * s;
+    pose.y = cache.map_pose.y + dx_odom * s + dy_odom * c;
+    pose.yaw = cluster_common::normalizeAngle(cache.map_pose.yaw + yaw_delta);
+    ROS_DEBUG_THROTTLE(5.0,
+        "Using short odom prediction for %s: cached map TF age %.2fs",
+        frame.c_str(), cache_age);
+    return true;
+  }
+
+  bool lookupPose(const std::string& frame, const std::string& odom_frame,
+                  PoseCache& cache, Pose2D& pose) {
+    try {
+      const geometry_msgs::TransformStamped map_to_odom =
+          tf_buffer_.lookupTransform(map_frame_, odom_frame, ros::Time(0),
+                                     ros::Duration(0.05));
+      const geometry_msgs::TransformStamped odom_to_base =
+          tf_buffer_.lookupTransform(odom_frame, frame, ros::Time(0),
+                                     ros::Duration(0.05));
+      const double map_yaw = tf2::getYaw(map_to_odom.transform.rotation);
+      const double odom_yaw = tf2::getYaw(odom_to_base.transform.rotation);
+      const double c = std::cos(map_yaw);
+      const double s = std::sin(map_yaw);
+      const double ox = odom_to_base.transform.translation.x;
+      const double oy = odom_to_base.transform.translation.y;
+      pose.x = map_to_odom.transform.translation.x + ox * c - oy * s;
+      pose.y = map_to_odom.transform.translation.y + ox * s + oy * c;
+      pose.yaw = cluster_common::normalizeAngle(map_yaw + odom_yaw);
+
+      const bool map_tf_fresh = transformFresh(map_to_odom, odom_frame, true);
+      const bool odom_tf_fresh = transformFresh(odom_to_base, frame);
+      if (!map_tf_fresh || !odom_tf_fresh) {
+        return predictPoseFromOdom(frame, odom_frame, cache, pose);
+      }
+
+      Pose2D odom_pose;
+      ros::Time odom_stamp;
+      if (lookupOdomPose(odom_frame, frame, odom_pose, odom_stamp)) {
+        cache.valid = true;
+        cache.map_pose = pose;
+        cache.odom_pose = odom_pose;
+        cache.stamp = ros::Time::now();
+      }
       return true;
     } catch (const tf2::TransformException& ex) {
       ROS_WARN_THROTTLE(2.0, "TF lookup failed %s -> %s: %s",
                         map_frame_.c_str(), frame.c_str(), ex.what());
+      return predictPoseFromOdom(frame, odom_frame, cache, pose);
+    }
+  }
+
+  bool transformFresh(const geometry_msgs::TransformStamped& tf,
+                      const std::string& frame,
+                      bool allow_amcl_future = false) const {
+    if (tf_max_age_ <= 0.0 || tf.header.stamp.isZero()) {
+      return true;
+    }
+
+    const double age = (ros::Time::now() - tf.header.stamp).toSec();
+    if (age > tf_max_age_) {
+      ROS_WARN_THROTTLE(5.0,
+          "TF stale for %s: age %.2fs exceeds %.2fs, using prediction if available",
+          frame.c_str(), age, tf_max_age_);
       return false;
     }
+    const double future_tolerance =
+        allow_amcl_future ? map_tf_future_tolerance_ : 0.2;
+    if (age < -future_tolerance) {
+      ROS_WARN_THROTTLE(1.0,
+          "TF from future for %s: age %.2fs exceeds %.2fs, check clock sync",
+          frame.c_str(), age, future_tolerance);
+      return false;
+    }
+    return true;
   }
 
   FormationOffset getFollowerOffset(uint8_t formation) const {
@@ -180,17 +441,19 @@ private:
 
     Pose2D leader;
     Pose2D follower;
-    if (!lookupPose(leader_frame_, leader) || !lookupPose(follower_frame_, follower)) {
+    if (!lookupPose(leader_frame_, leader_odom_frame_, leader_cache_, leader) ||
+        !lookupPose(follower_frame_, follower_odom_frame_, follower_cache_, follower)) {
       stop();
       publishStatus(cluster_msgs::FollowerStatus::STATE_LOST,
                     0.0, 0.0, 0.0, 0.0, false);
       return;
     }
+    applyPairedImuYawAssist(leader, follower);
 
-    const FormationOffset active_offset = getFollowerOffset(latest_leader_cmd_.formation);
-    const double active_offset_x = active_offset.x;
-    const double active_offset_y = active_offset.y;
-    const double active_offset_yaw = active_offset.yaw;
+    FormationOffset active_offset = getFollowerOffset(latest_leader_cmd_.formation);
+    double active_offset_x = active_offset.x;
+    double active_offset_y = active_offset.y;
+    double active_offset_yaw = active_offset.yaw;
 
     if (control_mode_changed_) {
       if (control_mode_ == "wheeltec_global") {
@@ -198,6 +461,7 @@ private:
       }
       control_mode_changed_ = false;
       target_initialized_ = false;
+      settled_ = false;
     }
 
     if (latest_leader_cmd_.formation != last_formation_) {
@@ -206,6 +470,9 @@ private:
       }
       last_formation_ = latest_leader_cmd_.formation;
       target_initialized_ = false;
+      settled_ = false;
+      final_yaw_active_ = false;
+      final_yaw_timed_out_ = false;
     }
 
     const double cos_l = std::cos(leader.yaw);
@@ -213,6 +480,21 @@ private:
     double target_x = leader.x + active_offset_x * cos_l - active_offset_y * sin_l;
     double target_y = leader.y + active_offset_x * sin_l + active_offset_y * cos_l;
     double target_yaw = cluster_common::normalizeAngle(leader.yaw + active_offset_yaw);
+
+    const bool assigned_goal_fresh = use_assigned_goal_ && assigned_goal_received_ &&
+        (ros::Time::now() - last_assigned_goal_time_).toSec() <= assigned_goal_timeout_ &&
+        latest_assigned_goal_.header.frame_id == map_frame_;
+    if (assigned_goal_fresh) {
+      target_x = latest_assigned_goal_.pose.position.x;
+      target_y = latest_assigned_goal_.pose.position.y;
+      target_yaw = tf2::getYaw(latest_assigned_goal_.pose.orientation);
+
+      const double map_dx = target_x - leader.x;
+      const double map_dy = target_y - leader.y;
+      active_offset_x = map_dx * cos_l + map_dy * sin_l;
+      active_offset_y = -map_dx * sin_l + map_dy * cos_l;
+      active_offset_yaw = cluster_common::normalizeAngle(target_yaw - leader.yaw);
+    }
 
     const double leader_vx = latest_leader_cmd_.leader_vx;
     const double leader_wz = latest_leader_cmd_.leader_vyaw;
@@ -235,8 +517,13 @@ private:
     const bool leader_static_for_path =
         std::fabs(leader_vx) < static_leader_v_threshold_ &&
         std::fabs(leader_wz) < static_leader_w_threshold_;
-    Pose2D raw_target = applyPathKeepout(leader, follower, final_target,
-                                         leader_static_for_path);
+    Pose2D raw_target = final_target;
+    if (!assigned_goal_fresh) {
+      raw_target = applyPathKeepout(leader, follower, final_target,
+                                    leader_static_for_path);
+    } else {
+      path_detour_active_ = false;
+    }
     Pose2D target = filterTarget(raw_target);
 
     const double dx = target.x - follower.x;
@@ -247,17 +534,82 @@ private:
     const double sin_f = std::sin(follower.yaw);
     const double forward_err = dx * cos_f + dy * sin_f;
     const double lateral_err = -dx * sin_f + dy * cos_f;
-    const double yaw_err = cluster_common::normalizeAngle(target.yaw - follower.yaw);
+    double yaw_err = cluster_common::normalizeAngle(target.yaw - follower.yaw);
+    const double yaw_cmd_err = cluster_common::clamp(
+        yaw_err, -yaw_error_linear_limit_, yaw_error_linear_limit_);
+    double yaw_gain_scale = 1.0;
+    if (distance < final_yaw_distance_) {
+      yaw_gain_scale = final_yaw_gain_scale_;
+      if (disable_final_spin_ && std::fabs(leader_vx) < min_linear_speed_ &&
+          std::fabs(leader_wz) < min_angular_speed_ &&
+          distance < static_position_tolerance_) {
+        yaw_err = 0.0;
+      }
+    }
     const double heading_err = std::atan2(lateral_err,
         std::max(std::fabs(forward_err), heading_lookahead_));
     const double heading_weight = cluster_common::clamp(
         (distance - pos_deadband_) /
         std::max(final_align_distance_ - pos_deadband_, 0.01),
         0.0, 1.0);
+    const bool leader_static =
+        std::fabs(leader_vx) < static_leader_v_threshold_ &&
+        std::fabs(leader_wz) < static_leader_w_threshold_;
+
+    const bool position_settled = distance <= settle_pos_tolerance_;
+    const bool position_released = distance > settle_release_distance_;
+    if (!leader_static || position_released ||
+        std::fabs(yaw_err) <= settle_yaw_tolerance_) {
+      final_yaw_timed_out_ = false;
+    }
+    const bool yaw_needs_alignment =
+        !disable_final_spin_ && !final_yaw_timed_out_ &&
+        std::fabs(yaw_err) > settle_yaw_tolerance_;
+    const bool yaw_released =
+        !disable_final_spin_ && !final_yaw_timed_out_ &&
+        std::fabs(yaw_err) > settle_yaw_release_;
+
+    if (!leader_static || position_released || yaw_released) {
+      settled_ = false;
+    }
+
+    if (!leader_static || position_released) {
+      final_yaw_active_ = false;
+    }
+
+    if (leader_static && position_settled) {
+      if (!yaw_needs_alignment) {
+        settled_ = true;
+        final_yaw_active_ = false;
+      } else {
+        if (!final_yaw_active_) {
+          final_yaw_active_ = true;
+          final_yaw_start_time_ = ros::Time::now();
+        }
+        const double align_time =
+            (ros::Time::now() - final_yaw_start_time_).toSec();
+        if (final_yaw_align_timeout_ > 0.0 &&
+            align_time > final_yaw_align_timeout_) {
+          ROS_WARN_THROTTLE(2.0,
+              "Final yaw alignment timeout: yaw_err=%.2f rad, dist=%.2f m",
+              yaw_err, distance);
+          settled_ = true;
+          final_yaw_active_ = false;
+          final_yaw_timed_out_ = true;
+        }
+      }
+    }
+
+    if (settled_ && leader_static) {
+      stop();
+      publishStatus(cluster_msgs::FollowerStatus::STATE_IDLE,
+                    lateral_err, forward_err, yaw_err, distance, true);
+      return;
+    }
 
     if (distance < pos_deadband_ && std::fabs(yaw_err) < yaw_deadband_ &&
-        std::fabs(leader_vx) < min_linear_speed_ &&
-        std::fabs(leader_wz) < min_angular_speed_) {
+        leader_static) {
+      settled_ = true;
       stop();
       publishStatus(cluster_msgs::FollowerStatus::STATE_IDLE,
                     lateral_err, forward_err, yaw_err, distance, true);
@@ -266,55 +618,43 @@ private:
 
     double vx = 0.0;
     double wz = 0.0;
-    if (control_mode_ == "wheeltec_global") {
-      vx = leader_vx_gain_ * leader_vx + k_v_ * forward_err;
-      wz = leader_wz_gain_ * leader_wz +
-          heading_weight * 0.5 * k_l_ * lateral_err +
-          k_a_ * std::sin(yaw_err);
+    if (leader_static && position_settled) {
+      vx = 0.0;
+      if (yaw_needs_alignment && !settled_) {
+        wz = yaw_gain_scale * k_a_ * yaw_cmd_err;
+        wz = cluster_common::clamp(wz,
+                                   -final_spin_max_angular_speed_,
+                                   final_spin_max_angular_speed_);
+      }
     } else {
-      const bool leader_static =
-          std::fabs(leader_vx) < static_leader_v_threshold_ &&
-          std::fabs(leader_wz) < static_leader_w_threshold_;
-
-      if (control_mode_ == "body_orbit" && leader_static) {
-        if (distance <= static_position_tolerance_) {
-          vx = 0.0;
-          wz = k_a_ * std::sin(yaw_err);
-        } else {
-        const double target_heading = std::atan2(dy, dx);
-        const double approach_err =
-            cluster_common::normalizeAngle(target_heading - follower.yaw);
-        const double approach_speed_scale =
-            cluster_common::clamp(std::cos(approach_err), 0.0, 1.0);
-
-        vx = k_v_ * distance * approach_speed_scale;
-        if (std::fabs(approach_err) > approach_heading_limit_) {
-          vx = 0.0;
-        }
-        wz = k_approach_heading_ * approach_err;
-        }
-      } else {
-        double vx_ff = leader_vx_gain_ * leader_vx;
-        if (control_mode_ == "body_orbit") {
+      double vx_ff = leader_vx_gain_ * leader_vx;
+      if (control_mode_ == "body_orbit") {
         const double offset_map_x = active_offset_x * cos_l - active_offset_y * sin_l;
         const double offset_map_y = active_offset_x * sin_l + active_offset_y * cos_l;
         const double target_vel_x = leader_vx * cos_l - leader_wz * offset_map_y;
         const double target_vel_y = leader_vx * sin_l + leader_wz * offset_map_x;
         vx_ff = orbit_v_gain_ * (target_vel_x * cos_f + target_vel_y * sin_f);
-        }
+      }
 
-        vx = vx_ff + k_v_ * forward_err;
-        wz = leader_wz_gain_ * leader_wz +
-            heading_weight * k_l_ * lateral_err +
-            k_heading_ * heading_weight * heading_err +
-            k_a_ * std::sin(yaw_err);
+      vx = vx_ff + k_v_ * forward_err;
 
-        const bool leader_turning = std::fabs(leader_wz) > turn_in_place_wz_threshold_;
-        const bool yaw_priority = std::fabs(yaw_err) > yaw_priority_threshold_;
-        if (leader_turning || yaw_priority) {
-          vx *= yaw_priority_vx_scale_;
-          vx = cluster_common::clamp(vx, -max_turn_linear_speed_, max_turn_linear_speed_);
-        }
+      // Wheeltec-style pose-error control: lateral error and yaw error are
+      // corrected together instead of rotating to the target point first.
+      double lateral_gain = k_l_;
+      if (vx < -min_linear_speed_) {
+        lateral_gain = -k_l_;
+      }
+      const double lateral_weight = std::max(heading_weight, 0.35);
+      wz = leader_wz_gain_ * leader_wz +
+          lateral_weight * lateral_gain * lateral_err +
+          k_heading_ * heading_weight * heading_err +
+          yaw_gain_scale * k_a_ * yaw_cmd_err;
+
+      const bool leader_turning = std::fabs(leader_wz) > turn_in_place_wz_threshold_;
+      const bool yaw_priority = std::fabs(yaw_err) > yaw_priority_threshold_;
+      if (leader_turning || yaw_priority) {
+        vx *= yaw_priority_vx_scale_;
+        vx = cluster_common::clamp(vx, -max_turn_linear_speed_, max_turn_linear_speed_);
       }
     }
 
@@ -324,6 +664,12 @@ private:
         (leader_vx > min_linear_speed_ || std::fabs(leader_wz) > min_angular_speed_) &&
         vx < 0.0) {
       vx = 0.0;
+    }
+
+    if (leader_static && distance < final_align_distance_) {
+      const double near_cap = cluster_common::clamp(
+          near_target_speed_gain_ * distance, 0.0, near_target_max_speed_);
+      vx = cluster_common::clamp(vx, -near_cap, near_cap);
     }
 
     vx = cluster_common::clamp(vx, -max_linear_speed_, max_linear_speed_);
@@ -336,8 +682,9 @@ private:
     cmd_vel_pub_.publish(cmd);
     if (debug_enabled_) {
       ROS_INFO_THROTTLE(debug_period_,
-          "[FOLLOW_DBG] mode=%s form=%u offset(x=%.3f,y=%.3f,yaw=%.3f) leader(x=%.3f,y=%.3f,yaw=%.3f,vx=%.3f,wz=%.3f) follower(x=%.3f,y=%.3f,yaw=%.3f) target(final_x=%.3f,final_y=%.3f,raw_x=%.3f,raw_y=%.3f,raw_yaw=%.3f,x=%.3f,y=%.3f,yaw=%.3f,detour=%d) err(fwd=%.3f,lat=%.3f,yaw=%.3f,dist=%.3f,heading=%.3f,weight=%.3f) cmd_raw(vx=%.3f,wz=%.3f) cmd_out(vx=%.3f,wz=%.3f)",
+          "[FOLLOW_DBG] mode=%s form=%u assigned=%d offset(x=%.3f,y=%.3f,yaw=%.3f) leader(x=%.3f,y=%.3f,yaw=%.3f,vx=%.3f,wz=%.3f) follower(x=%.3f,y=%.3f,yaw=%.3f) target(final_x=%.3f,final_y=%.3f,raw_x=%.3f,raw_y=%.3f,raw_yaw=%.3f,x=%.3f,y=%.3f,yaw=%.3f,detour=%d) err(fwd=%.3f,lat=%.3f,yaw=%.3f,dist=%.3f,heading=%.3f,weight=%.3f) cmd_raw(vx=%.3f,wz=%.3f) cmd_out(vx=%.3f,wz=%.3f)",
           control_mode_.c_str(), latest_leader_cmd_.formation,
+          assigned_goal_fresh ? 1 : 0,
           active_offset_x, active_offset_y, active_offset_yaw,
           leader.x, leader.y, leader.yaw, leader_vx, leader_wz,
           follower.x, follower.y, follower.yaw,
@@ -385,7 +732,11 @@ private:
     const double dy = raw_target.y - filtered_target_.y;
     const double jump = std::sqrt(dx * dx + dy * dy);
     if (jump > max_target_jump_) {
-      ROS_WARN_THROTTLE(1.0, "Target pose jumped %.2f m, holding filtered target", jump);
+      ROS_WARN_THROTTLE(2.0, "Target pose jumped %.2f m, accepting new target", jump);
+      filtered_target_ = raw_target;
+      settled_ = false;
+      final_yaw_active_ = false;
+      final_yaw_timed_out_ = false;
       return filtered_target_;
     }
 
@@ -434,8 +785,8 @@ private:
     detour.y = leader.y + detour_radius * std::sin(from_angle + step);
 
     if (!path_detour_active_) {
-      ROS_WARN("Path keepout detour active: line_clearance=%.2f, target_dist=%.2f",
-               line_clearance, target_dist);
+      ROS_DEBUG("Path keepout detour active: line_clearance=%.2f, target_dist=%.2f",
+                line_clearance, target_dist);
     }
     path_detour_active_ = true;
     return detour;
@@ -473,7 +824,10 @@ private:
   ros::NodeHandle nh_;
   ros::NodeHandle pnh_;
   ros::Subscriber leader_cmd_sub_;
+  ros::Subscriber assigned_goal_sub_;
   ros::Subscriber control_mode_sub_;
+  ros::Subscriber leader_imu_sub_;
+  ros::Subscriber follower_imu_sub_;
   ros::Publisher cmd_vel_pub_;
   ros::Publisher status_pub_;
   ros::Timer control_timer_;
@@ -481,20 +835,30 @@ private:
   tf2_ros::TransformListener tf_listener_;
 
   cluster_msgs::LeaderCmd latest_leader_cmd_;
+  geometry_msgs::PoseStamped latest_assigned_goal_;
   bool leader_cmd_received_{false};
+  bool assigned_goal_received_{false};
   ros::Time last_leader_cmd_time_;
+  ros::Time last_assigned_goal_time_;
 
   std::string map_frame_;
   std::string leader_frame_;
   std::string follower_frame_;
+  std::string leader_odom_frame_;
+  std::string follower_odom_frame_;
   std::string cmd_vel_topic_;
   std::string status_topic_;
+  std::string assigned_goal_topic_;
+  std::string leader_imu_topic_;
+  std::string follower_imu_topic_;
   std::string control_mode_topic_;
   std::string control_mode_;
 
   int follower_index_;
   double formation_spacing_;
   double circle_show_radius_;
+  bool use_assigned_goal_;
+  double assigned_goal_timeout_;
   double offset_x_;
   double offset_y_;
   double loop_rate_;
@@ -507,6 +871,7 @@ private:
   double k_v_;
   double k_l_;
   double k_a_;
+  double yaw_error_linear_limit_;
   double k_heading_;
   double k_approach_heading_;
   double leader_vx_gain_;
@@ -514,6 +879,8 @@ private:
   double orbit_v_gain_;
   double target_filter_alpha_;
   double cmd_filter_alpha_;
+  double near_target_speed_gain_;
+  double near_target_max_speed_;
   double heading_lookahead_;
   double max_target_jump_;
   double final_align_distance_;
@@ -530,6 +897,25 @@ private:
   bool allow_orbit_reverse_;
   bool debug_enabled_;
   double debug_period_;
+  bool use_imu_yaw_assist_;
+  double imu_max_age_;
+  double imu_offset_alpha_;
+  double tf_max_age_;
+  double map_tf_future_tolerance_;
+  bool enable_odom_prediction_;
+  double prediction_max_age_;
+  double prediction_odom_max_age_;
+  double final_yaw_distance_;
+  double final_yaw_gain_scale_;
+  bool disable_final_spin_;
+  double settle_pos_tolerance_;
+  double settle_release_distance_;
+  double settle_yaw_tolerance_;
+  double settle_yaw_release_;
+  double final_spin_max_angular_speed_;
+  double final_yaw_align_max_error_;
+  double final_yaw_align_timeout_;
+  double static_yaw_blend_distance_;
   bool path_keepout_enabled_;
   double path_keepout_radius_;
   double path_detour_radius_;
@@ -538,10 +924,18 @@ private:
   bool use_leader_offsets_;
   bool control_mode_changed_{false};
   bool target_initialized_{false};
+  bool settled_{false};
+  bool final_yaw_active_{false};
+  bool final_yaw_timed_out_{false};
   bool path_detour_active_{false};
   uint8_t last_formation_{255};
   double formation_anchor_yaw_{0.0};
+  ros::Time final_yaw_start_time_;
   Pose2D filtered_target_{0.0, 0.0, 0.0};
+  PoseCache leader_cache_;
+  PoseCache follower_cache_;
+  ImuYawCache leader_imu_;
+  ImuYawCache follower_imu_;
   geometry_msgs::Twist last_cmd_;
 };
 

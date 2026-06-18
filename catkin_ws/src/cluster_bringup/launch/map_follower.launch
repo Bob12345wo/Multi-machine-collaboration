@@ -1,6 +1,13 @@
 <launch>
   <!-- Shared-map follower controllers for robot2 and robot3. -->
   <arg name="enable_avoidance" default="true" />
+  <arg name="use_dynamic_assignment" default="true" />
+
+  <node if="$(arg use_dynamic_assignment)"
+        pkg="cluster_following" type="formation_slot_planner_node"
+        name="formation_slot_planner" output="screen">
+    <rosparam file="$(find cluster_bringup)/config/formation_slot_planner_params.yaml" />
+  </node>
 
   <node unless="$(arg enable_avoidance)"
         pkg="cluster_following" type="map_follower_controller_node"
@@ -8,8 +15,13 @@
     <rosparam file="$(find cluster_bringup)/config/map_follower_params.yaml" />
     <param name="follower_index" value="2" />
     <param name="follower_frame" value="robot2/base_link" />
+    <param name="follower_odom_frame" value="robot2/odom" />
     <param name="cmd_vel_topic" value="/robot2/cmd_vel" />
     <param name="status_topic" value="/robot2/follower_status" />
+    <param name="leader_imu_topic" value="/robot1/imu_fixed" />
+    <param name="follower_imu_topic" value="/robot2/imu_fixed" />
+    <param name="use_assigned_goal" value="$(arg use_dynamic_assignment)" />
+    <param name="assigned_goal_topic" value="/robot2/assigned_goal" />
   </node>
 
   <node unless="$(arg enable_avoidance)"
@@ -19,8 +31,13 @@
     <param name="follower_index" value="3" />
     <param name="use_leader_offsets" value="false" />
     <param name="follower_frame" value="robot3/base_link" />
+    <param name="follower_odom_frame" value="robot3/odom" />
     <param name="cmd_vel_topic" value="/robot3/cmd_vel" />
     <param name="status_topic" value="/robot3/follower_status" />
+    <param name="leader_imu_topic" value="/robot1/imu_fixed" />
+    <param name="follower_imu_topic" value="/robot3/imu_fixed" />
+    <param name="use_assigned_goal" value="$(arg use_dynamic_assignment)" />
+    <param name="assigned_goal_topic" value="/robot3/assigned_goal" />
   </node>
 
   <node if="$(arg enable_avoidance)"
@@ -29,8 +46,13 @@
     <rosparam file="$(find cluster_bringup)/config/map_follower_params.yaml" />
     <param name="follower_index" value="2" />
     <param name="follower_frame" value="robot2/base_link" />
+    <param name="follower_odom_frame" value="robot2/odom" />
     <param name="cmd_vel_topic" value="/robot2/cmd_vel_raw" />
     <param name="status_topic" value="/robot2/follower_status" />
+    <param name="leader_imu_topic" value="/robot1/imu_fixed" />
+    <param name="follower_imu_topic" value="/robot2/imu_fixed" />
+    <param name="use_assigned_goal" value="$(arg use_dynamic_assignment)" />
+    <param name="assigned_goal_topic" value="/robot2/assigned_goal" />
   </node>
 
   <node if="$(arg enable_avoidance)"
@@ -40,8 +62,13 @@
     <param name="follower_index" value="3" />
     <param name="use_leader_offsets" value="false" />
     <param name="follower_frame" value="robot3/base_link" />
+    <param name="follower_odom_frame" value="robot3/odom" />
     <param name="cmd_vel_topic" value="/robot3/cmd_vel_raw" />
     <param name="status_topic" value="/robot3/follower_status" />
+    <param name="leader_imu_topic" value="/robot1/imu_fixed" />
+    <param name="follower_imu_topic" value="/robot3/imu_fixed" />
+    <param name="use_assigned_goal" value="$(arg use_dynamic_assignment)" />
+    <param name="assigned_goal_topic" value="/robot3/assigned_goal" />
   </node>
 
   <node if="$(arg enable_avoidance)"
@@ -49,6 +76,7 @@
         name="robot2_cmd_safety_filter" output="screen">
     <rosparam file="$(find cluster_bringup)/config/cmd_safety_filter_params.yaml" />
     <param name="peer_frame" value="robot3/base_link" />
+    <param name="peer_odom_frame" value="robot3/odom" />
   </node>
 
   <node if="$(arg enable_avoidance)"
@@ -60,6 +88,8 @@
     <param name="scan_topic" value="/robot3/scan" />
     <param name="enable_topic" value="/robot2/avoidance_enabled" />
     <param name="follower_frame" value="robot3/base_link" />
+    <param name="follower_odom_frame" value="robot3/odom" />
     <param name="peer_frame" value="robot2/base_link" />
+    <param name="peer_odom_frame" value="robot2/odom" />
   </node>
 </launch>

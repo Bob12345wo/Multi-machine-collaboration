@@ -16,9 +16,9 @@ class ScanFrameRepublisher(object):
         self.input_scan = rospy.get_param('~input_scan')
         self.output_scan = rospy.get_param('~output_scan')
         self.frame_id = rospy.get_param('~frame_id')
-        self.pub = rospy.Publisher(self.output_scan, LaserScan, queue_size=10)
+        self.pub = rospy.Publisher(self.output_scan, LaserScan, queue_size=1)
         self.sub = rospy.Subscriber(self.input_scan, LaserScan, self.callback,
-                                    queue_size=10)
+                                    queue_size=1, tcp_nodelay=True)
         rospy.loginfo("Republishing %s to %s with frame_id=%s",
                       self.input_scan, self.output_scan, self.frame_id)
 

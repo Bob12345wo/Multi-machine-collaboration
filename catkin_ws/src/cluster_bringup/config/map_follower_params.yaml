@@ -5,10 +5,16 @@
 map_frame: map
 leader_frame: robot1/base_link
 follower_frame: robot2/base_link
+leader_odom_frame: robot1/odom
+follower_odom_frame: robot2/odom
 cmd_vel_topic: /robot2/cmd_vel
 control_mode: body_orbit
 use_leader_offsets: true
 circle_show_radius: 0.5
+use_assigned_goal: true
+# Slot planner publishes dynamic goals continuously. Keep a short hold window so
+# followers do not fall back to static offsets during brief Wi-Fi/TF hiccups.
+assigned_goal_timeout: 1.2
 
 # Desired follower position in leader body frame.
 # body_orbit uses the leader body frame: X forward, Y left.
@@ -18,44 +24,82 @@ offset_x: -0.8
 offset_y: 0.0
 
 loop_rate: 20
-max_linear_speed: 0.6
-max_angular_speed: 0.8
+max_linear_speed: 0.65
+max_angular_speed: 0.9
 min_linear_speed: 0.05
 min_angular_speed: 0.05
 pos_deadband: 0.05
 yaw_deadband: 0.08
 
 # Gains equivalent to wheeltec_multi k_v/k_l/k_a, adapted for LIMO.
-k_v: 0.9
-k_l: 0.5
-k_a: 1.35
-k_heading: 0.65
-k_approach_heading: 1.4
+k_v: 1.05
+k_l: 0.95
+k_a: 1.30
+yaw_error_linear_limit: 1.2
+k_heading: 0.35
+k_approach_heading: 1.55
 leader_vx_gain: 1.0
-leader_wz_gain: 0.8
-orbit_v_gain: 0.8
-target_filter_alpha: 0.35
-cmd_filter_alpha: 0.45
+leader_wz_gain: 0.9
+orbit_v_gain: 0.95
+target_filter_alpha: 0.88
+cmd_filter_alpha: 0.95
+near_target_speed_gain: 0.80
+near_target_max_speed: 0.22
 heading_lookahead: 0.45
-max_target_jump: 0.8
+max_target_jump: 1.5
 final_align_distance: 0.8
-static_position_tolerance: 0.12
+static_position_tolerance: 0.08
 static_leader_v_threshold: 0.04
 static_leader_w_threshold: 0.04
 approach_heading_limit: 0.9
-yaw_priority_threshold: 0.55
+yaw_priority_threshold: 0.90
 turn_in_place_wz_threshold: 0.6
-max_turn_linear_speed: 0.28
-yaw_priority_vx_scale: 0.75
+max_turn_linear_speed: 0.34
+yaw_priority_vx_scale: 0.85
 turn_radius_compensation: false
-allow_reverse_while_leader_forward: false
+allow_reverse_while_leader_forward: true
 allow_orbit_reverse: true
 
-# Debug output for collision analysis. Disable after tuning.
-debug_enabled: true
+# Debug output for collision analysis. Enable only when collecting logs.
+debug_enabled: false
 debug_period: 0.5
 
+# Use the robot-specific IMU orientation as a yaw stabilizer. Position still
+# comes from map/odom TF; this only reduces heading drift during turns.
+use_imu_yaw_assist: true
+leader_imu_topic: /robot1/imu_fixed
+follower_imu_topic: /robot2/imu_fixed
+imu_max_age: 1.0
+imu_offset_alpha: 0.0
+
+# Reject stale TF instead of driving with an old robot pose.
+tf_max_age: 2.5
+# AMCL intentionally timestamps map->odom into the future by its 1.0s
+# transform_tolerance. This allowance applies only to map TF, not odom TF.
+map_tf_future_tolerance: 1.2
+
+# If map TF has a short hiccup, use odom delta from the last reliable map pose.
+# Keep this short: long blind odom prediction makes formation error accumulate.
+enable_odom_prediction: true
+prediction_max_age: 6.0
+prediction_odom_max_age: 1.0
+
+# Near the target, prioritize position stability over exact yaw to avoid
+# repeated spin-in-place when AMCL yaw is noisy.
+final_yaw_distance: 0.30
+final_yaw_gain_scale: 0.55
+disable_final_spin: false
+settle_pos_tolerance: 0.08
+settle_release_distance: 0.18
+settle_yaw_tolerance: 0.12
+settle_yaw_release: 0.25
+final_spin_max_angular_speed: 0.45
+final_yaw_align_max_error: 0.90
+final_yaw_align_timeout: 0.0
+static_yaw_blend_distance: 0.10
+
 # During static formation switches, avoid driving straight through car1.
+# This is only used when no assigned_goal planner is active.
 path_keepout_enabled: true
 path_keepout_radius: 0.70
 path_detour_radius: 0.85

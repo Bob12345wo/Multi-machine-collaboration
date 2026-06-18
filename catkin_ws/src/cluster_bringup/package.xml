@@ -13,11 +13,19 @@
   <exec_depend>std_msgs</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>actionlib_msgs</exec_depend>
+  <exec_depend>tf</exec_depend>
   <exec_depend>tf2</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
   <exec_depend>cluster_msgs</exec_depend>
   <exec_depend>cluster_common</exec_depend>
   <exec_depend>cluster_formation</exec_depend>
   <exec_depend>cluster_following</exec_depend>
   <exec_depend>limo_base</exec_depend>
   <exec_depend>limo_bringup</exec_depend>
+  <exec_depend>move_base</exec_depend>
+  <exec_depend>global_planner</exec_depend>
+  <exec_depend>dwa_local_planner</exec_depend>
+  <exec_depend>costmap_2d</exec_depend>
 </package>

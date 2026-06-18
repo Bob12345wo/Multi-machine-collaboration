@@ -1,7 +1,9 @@
 <launch>
   <!-- Start only the map-frame follower after AMCL localization is verified. -->
   <arg name="enable_avoidance" default="true" />
+  <arg name="use_dynamic_assignment" default="true" />
   <include file="$(find cluster_bringup)/launch/map_follower.launch">
     <arg name="enable_avoidance" value="$(arg enable_avoidance)" />
+    <arg name="use_dynamic_assignment" value="$(arg use_dynamic_assignment)" />
   </include>
 </launch>

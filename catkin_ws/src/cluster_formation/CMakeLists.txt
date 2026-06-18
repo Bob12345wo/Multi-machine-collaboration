@@ -7,6 +7,7 @@ find_package(catkin REQUIRED COMPONENTS
   nav_msgs
   tf2
   tf2_geometry_msgs
+  tf2_ros
   std_msgs
   cluster_msgs
   cluster_common
@@ -27,6 +28,7 @@ catkin_package(
     std_msgs
     tf2
     tf2_geometry_msgs
+    tf2_ros
     cluster_msgs
     cluster_common
     dynamic_reconfigure

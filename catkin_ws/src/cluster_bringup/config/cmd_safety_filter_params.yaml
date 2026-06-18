@@ -10,6 +10,10 @@ peer_keepout_enabled: true
 leader_frame: robot1/base_link
 follower_frame: robot2/base_link
 peer_frame: ''
+map_frame: map
+leader_odom_frame: robot1/odom
+follower_odom_frame: robot2/odom
+peer_odom_frame: ''
 
 loop_rate: 20
 cmd_timeout: 0.5
@@ -19,6 +23,9 @@ scan_timeout: 0.7
 safe_distance: 0.65
 danger_distance: 0.35
 obstacle_min_valid_range: 0.05
+# Require several valid returns before treating a target as an obstacle. This
+# rejects isolated LD14 speckles without changing any safety distance.
+obstacle_confirmation_points: 3
 front_overhang_distance: 0.30
 
 # Scan sector in radians. If the front sector appears reversed in RViz,
@@ -48,12 +55,18 @@ robot_turn_gain: 0.0
 
 # Peer follower keepout, used for robot2 <-> robot3 protection. Keep this
 # below the normal 0.8m formation spacing so COLUMN does not get stuck.
-peer_safe_distance: 0.75
-peer_danger_distance: 0.60
+peer_safe_distance: 0.65
+peer_danger_distance: 0.50
 peer_slowdown_gain: 1.0
 peer_turn_gain: 0.0
-peer_danger_wz_scale: 0.3
+peer_danger_wz_scale: 0.0
 
-# Debug output for collision analysis. Disable after tuning.
-debug_enabled: true
+# Debug output for collision analysis. Enable only when collecting logs.
+debug_enabled: false
 debug_period: 0.5
+
+# TF must be fresh in the shared map tree. Direct frame fallback is disabled
+# because it can combine stale robot poses and create extrapolation warnings.
+tf_max_age: 2.5
+map_tf_future_tolerance: 1.2
+allow_direct_tf_fallback: false

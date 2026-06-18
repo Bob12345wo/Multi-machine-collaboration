@@ -1,11 +1,14 @@
 #include "cluster_formation/leader_controller.h"
+#include <algorithm>
 #include <cmath>
 #include <string>
+#include <geometry_msgs/TransformStamped.h>
+#include <tf2/utils.h>
 
 namespace cluster_formation {
 
 LeaderController::LeaderController(const ros::NodeHandle& nh, const ros::NodeHandle& pnh)
-  : nh_(nh), pnh_(pnh)
+  : nh_(nh), pnh_(pnh), tf_listener_(tf_buffer_)
   , self_odom_received_(false)
   , follower_odom_received_(false)
   , follower_status_received_(false)
@@ -15,12 +18,15 @@ LeaderController::LeaderController(const ros::NodeHandle& nh, const ros::NodeHan
   , return_home_active_(false)
   , current_mode_(cluster_msgs::LeaderCmd::MODE_IDLE)
   , current_formation_(cluster_msgs::LeaderCmd::FORMATION_COLUMN)
+  , last_non_circle_formation_(cluster_msgs::LeaderCmd::FORMATION_COLUMN)
   , use_custom_offsets_(false)
   , circle_show_was_active_(false)
   , error_exceeded_(false) {
 
   // Load params
   pnh_.param("loop_rate", loop_rate_, 20.0);
+  pnh_.param("follower_watchdog_enabled", follower_watchdog_enabled_, false);
+  pnh_.param("formation_error_watchdog_enabled", formation_error_watchdog_enabled_, false);
   pnh_.param("follower_lost_timeout", follower_lost_timeout_, 3.0);
   pnh_.param("max_formation_error", max_formation_error_, 2.0);
   pnh_.param("max_error_duration", max_error_duration_, 5.0);
@@ -31,8 +37,29 @@ LeaderController::LeaderController(const ros::NodeHandle& nh, const ros::NodeHan
   pnh_.param("return_home_yaw_tolerance", return_home_yaw_tolerance_, 0.12);
   pnh_.param("return_home_k_v", return_home_k_v_, 0.7);
   pnh_.param("return_home_k_w", return_home_k_w_, 1.0);
+  pnh_.param("return_home_max_linear_speed", return_home_max_linear_speed_, 0.35);
+  pnh_.param("return_home_max_angular_speed", return_home_max_angular_speed_, 0.55);
+  pnh_.param("return_home_use_map", return_home_use_map_, true);
+  pnh_.param<std::string>("map_frame", map_frame_, "map");
+  pnh_.param<std::string>("self_frame", self_frame_, "robot1/base_link");
   pnh_.param("circle_show_radius", circle_show_radius_, 0.5);
   pnh_.param("circle_show_angular_speed", circle_show_angular_speed_, 0.32);
+  pnh_.param("cmd_filter_alpha", cmd_filter_alpha_, 0.75);
+  pnh_.param("cmd_slew_linear", cmd_slew_linear_, 0.8);
+  pnh_.param("cmd_slew_angular", cmd_slew_angular_, 1.6);
+  pnh_.param("adaptive_formation_speed_enabled",
+             adaptive_formation_speed_enabled_, true);
+  pnh_.param("formation_full_speed_error", formation_full_speed_error_, 0.15);
+  pnh_.param("formation_min_speed_error", formation_min_speed_error_, 0.55);
+  pnh_.param("formation_min_speed_scale", formation_min_speed_scale_, 0.35);
+  pnh_.param("formation_status_timeout", formation_status_timeout_, 0.6);
+  pnh_.param("formation_angular_scale_floor",
+             formation_angular_scale_floor_, 0.65);
+  pnh_.param("formation_speed_attack_alpha",
+             formation_speed_attack_alpha_, 0.35);
+  pnh_.param("formation_speed_release_alpha",
+             formation_speed_release_alpha_, 0.08);
+  adaptive_formation_speed_scale_ = 1.0;
   controller_start_time_ = ros::Time::now();
 
   std::string initial_mode;
@@ -48,22 +75,24 @@ LeaderController::LeaderController(const ros::NodeHandle& nh, const ros::NodeHan
   }
 
   // Subscribers
-  self_odom_sub_ = nh_.subscribe("/robot1/odom", 10,
+  self_odom_sub_ = nh_.subscribe("/robot1/odom", 1,
       &LeaderController::selfOdomCallback, this);
-  follower_odom_sub_ = nh_.subscribe("/robot2/odom", 10,
+  follower_odom_sub_ = nh_.subscribe("/robot2/odom", 1,
       &LeaderController::followerOdomCallback, this);
-  follower_status_sub_ = nh_.subscribe("/robot2/follower_status", 10,
+  follower_status_sub_ = nh_.subscribe("/robot2/follower_status", 1,
       &LeaderController::followerStatusCallback, this);
-  follower3_status_sub_ = nh_.subscribe("/robot3/follower_status", 10,
+  follower3_status_sub_ = nh_.subscribe("/robot3/follower_status", 1,
       &LeaderController::follower3StatusCallback, this);
-  teleop_vel_sub_ = nh_.subscribe("/robot1/teleop_vel", 10,
+  teleop_vel_sub_ = nh_.subscribe("/robot1/teleop_vel", 1,
       &LeaderController::teleopVelCallback, this);
-  return_home_sub_ = nh_.subscribe("/robot1/return_home", 5,
+  nav_vel_sub_ = nh_.subscribe("/robot1/nav_vel", 1,
+      &LeaderController::navVelCallback, this);
+  return_home_sub_ = nh_.subscribe("/robot1/return_home", 1,
       &LeaderController::returnHomeCallback, this);
 
   // Publishers
-  cmd_vel_pub_ = nh_.advertise<geometry_msgs::Twist>("/robot1/cmd_vel", 10);
-  leader_cmd_pub_ = nh_.advertise<cluster_msgs::LeaderCmd>("/robot1/leader_cmd", 10);
+  cmd_vel_pub_ = nh_.advertise<geometry_msgs::Twist>("/robot1/cmd_vel", 1);
+  leader_cmd_pub_ = nh_.advertise<cluster_msgs::LeaderCmd>("/robot1/leader_cmd", 1);
 
   // Services
   set_mode_srv_ = nh_.advertiseService("/robot1/set_mode",
@@ -85,16 +114,55 @@ LeaderController::LeaderController(const ros::NodeHandle& nh, const ros::NodeHan
            current_mode_);
 }
 
+void LeaderController::publishCmdVel(const geometry_msgs::Twist& cmd,
+                                     bool reset_filter,
+                                     bool smooth) {
+  geometry_msgs::Twist target = cmd;
+  target.linear.x = cluster_common::clamp(target.linear.x,
+                                          -max_linear_speed_, max_linear_speed_);
+  target.angular.z = cluster_common::clamp(target.angular.z,
+                                           -max_angular_speed_, max_angular_speed_);
+
+  ros::Time now = ros::Time::now();
+  geometry_msgs::Twist out = target;
+
+  if (smooth && !reset_filter && !last_cmd_vel_time_.isZero()) {
+    double dt = (now - last_cmd_vel_time_).toSec();
+    if (dt <= 0.0 || dt > 0.5) {
+      dt = 1.0 / std::max(loop_rate_, 1.0);
+    }
+
+    const double alpha = cluster_common::clamp(cmd_filter_alpha_, 0.0, 1.0);
+    const double filtered_vx =
+        alpha * target.linear.x + (1.0 - alpha) * last_cmd_vel_.linear.x;
+    const double filtered_wz =
+        alpha * target.angular.z + (1.0 - alpha) * last_cmd_vel_.angular.z;
+
+    const double max_dv = std::max(0.0, cmd_slew_linear_) * dt;
+    const double max_dw = std::max(0.0, cmd_slew_angular_) * dt;
+    out.linear.x = last_cmd_vel_.linear.x +
+        cluster_common::clamp(filtered_vx - last_cmd_vel_.linear.x,
+                              -max_dv, max_dv);
+    out.angular.z = last_cmd_vel_.angular.z +
+        cluster_common::clamp(filtered_wz - last_cmd_vel_.angular.z,
+                              -max_dw, max_dw);
+  }
+
+  if (std::fabs(out.linear.x) < 0.01) out.linear.x = 0.0;
+  if (std::fabs(out.angular.z) < 0.01) out.angular.z = 0.0;
+
+  cmd_vel_pub_.publish(out);
+  last_cmd_vel_ = out;
+  last_cmd_vel_time_ = now;
+}
+
 // ---------- Callbacks ----------
 
 void LeaderController::selfOdomCallback(const nav_msgs::Odometry::ConstPtr& msg) {
   latest_self_odom_ = *msg;
   self_odom_received_ = true;
   if (!home_pose_received_) {
-    home_pose_ = cluster_common::odomToPose2D(*msg);
-    home_pose_received_ = true;
-    ROS_INFO("Recorded robot1 home pose: x=%.2f y=%.2f yaw=%.2f",
-             home_pose_.x, home_pose_.y, home_pose_.theta);
+    ensureHomePose();
   }
 }
 
@@ -107,14 +175,77 @@ void LeaderController::followerStatusCallback(
     const cluster_msgs::FollowerStatus::ConstPtr& msg) {
   latest_follower_status_ = *msg;
   follower_status_received_ = true;
-  last_follower_status_time_ = msg->header.stamp;
+  last_follower_status_time_ = ros::Time::now();
 }
 
 void LeaderController::follower3StatusCallback(
     const cluster_msgs::FollowerStatus::ConstPtr& msg) {
   latest_follower3_status_ = *msg;
   follower3_status_received_ = true;
-  last_follower3_status_time_ = msg->header.stamp;
+  last_follower3_status_time_ = ros::Time::now();
+}
+
+void LeaderController::updateAdaptiveFormationSpeedScale() {
+  if (!adaptive_formation_speed_enabled_ ||
+      current_mode_ != cluster_msgs::LeaderCmd::MODE_FORMATION) {
+    adaptive_formation_speed_scale_ = 1.0;
+    return;
+  }
+
+  const ros::Time now = ros::Time::now();
+  double max_error = 0.0;
+  bool has_fresh_status = false;
+  if (follower_status_received_ &&
+      (now - last_follower_status_time_).toSec() <= formation_status_timeout_ &&
+      std::isfinite(latest_follower_status_.error_dist)) {
+    max_error = std::max(max_error, latest_follower_status_.error_dist);
+    has_fresh_status = true;
+  }
+  if (follower3_status_received_ &&
+      (now - last_follower3_status_time_).toSec() <= formation_status_timeout_ &&
+      std::isfinite(latest_follower3_status_.error_dist)) {
+    max_error = std::max(max_error, latest_follower3_status_.error_dist);
+    has_fresh_status = true;
+  }
+
+  double target_scale = 1.0;
+  if (has_fresh_status && max_error > formation_full_speed_error_) {
+    const double span = std::max(
+        formation_min_speed_error_ - formation_full_speed_error_, 0.01);
+    const double ratio = cluster_common::clamp(
+        (max_error - formation_full_speed_error_) / span, 0.0, 1.0);
+    target_scale = 1.0 - ratio * (1.0 - formation_min_speed_scale_);
+  }
+
+  const double alpha = target_scale < adaptive_formation_speed_scale_
+      ? formation_speed_attack_alpha_
+      : formation_speed_release_alpha_;
+  adaptive_formation_speed_scale_ +=
+      cluster_common::clamp(alpha, 0.0, 1.0) *
+      (target_scale - adaptive_formation_speed_scale_);
+  adaptive_formation_speed_scale_ = cluster_common::clamp(
+      adaptive_formation_speed_scale_, formation_min_speed_scale_, 1.0);
+
+  if (adaptive_formation_speed_scale_ < 0.95) {
+    ROS_INFO_THROTTLE(2.0,
+        "Adaptive formation speed: scale=%.2f max_follower_error=%.2fm",
+        adaptive_formation_speed_scale_, max_error);
+  }
+}
+
+geometry_msgs::Twist LeaderController::applyAdaptiveFormationSpeed(
+    const geometry_msgs::Twist& cmd) const {
+  if (!adaptive_formation_speed_enabled_ ||
+      current_mode_ != cluster_msgs::LeaderCmd::MODE_FORMATION) {
+    return cmd;
+  }
+
+  geometry_msgs::Twist scaled = cmd;
+  scaled.linear.x *= adaptive_formation_speed_scale_;
+  const double angular_scale = formation_angular_scale_floor_ +
+      (1.0 - formation_angular_scale_floor_) * adaptive_formation_speed_scale_;
+  scaled.angular.z *= cluster_common::clamp(angular_scale, 0.0, 1.0);
+  return scaled;
 }
 
 void LeaderController::teleopVelCallback(const geometry_msgs::Twist::ConstPtr& msg) {
@@ -122,25 +253,88 @@ void LeaderController::teleopVelCallback(const geometry_msgs::Twist::ConstPtr& m
   teleop_cmd_received_ = true;
   last_teleop_cmd_time_ = ros::Time::now();
 
-  // Relay teleop commands to cmd_vel in all modes
-  // (in IDLE, we still allow teleop for manual driving)
-  if (current_mode_ != cluster_msgs::LeaderCmd::MODE_IDLE) {
-    cmd_vel_pub_.publish(*msg);
+  const bool nonzero_manual_cmd =
+      std::fabs(msg->linear.x) > 0.01 || std::fabs(msg->angular.z) > 0.01;
+
+  const bool circle_show_active =
+      current_mode_ == cluster_msgs::LeaderCmd::MODE_FORMATION &&
+      current_formation_ == cluster_msgs::LeaderCmd::FORMATION_CIRCLE_SHOW &&
+      !use_custom_offsets_;
+
+  if (circle_show_active && nonzero_manual_cmd) {
+    ROS_INFO("Manual command received in CIRCLE_SHOW; returning to formation %u",
+             last_non_circle_formation_);
+    current_formation_ = last_non_circle_formation_;
+    circle_show_was_active_ = true;
+  }
+
+  // Do not let the keyboard's continuous zero-speed stream overwrite
+  // autonomous leader commands such as circle-show and return-home.
+  if (!return_home_active_ && !(circle_show_active && !nonzero_manual_cmd) &&
+      current_mode_ != cluster_msgs::LeaderCmd::MODE_IDLE) {
+    publishCmdVel(applyAdaptiveFormationSpeed(*msg), false, false);
+  }
+}
+
+void LeaderController::navVelCallback(const geometry_msgs::Twist::ConstPtr& msg) {
+  latest_teleop_cmd_ = *msg;
+  teleop_cmd_received_ = true;
+  last_teleop_cmd_time_ = ros::Time::now();
+
+  const bool nonzero_nav_cmd =
+      std::fabs(msg->linear.x) > 0.01 || std::fabs(msg->angular.z) > 0.01;
+  const bool circle_show_active =
+      current_mode_ == cluster_msgs::LeaderCmd::MODE_FORMATION &&
+      current_formation_ == cluster_msgs::LeaderCmd::FORMATION_CIRCLE_SHOW &&
+      !use_custom_offsets_;
+  if (circle_show_active && nonzero_nav_cmd) {
+    current_formation_ = last_non_circle_formation_;
+    circle_show_was_active_ = true;
+  }
+
+  if (!return_home_active_ &&
+      current_mode_ != cluster_msgs::LeaderCmd::MODE_IDLE) {
+    // DWA closes its control loop using the velocity it requested. Scaling
+    // translation and rotation independently here changes the trajectory and
+    // can trigger false oscillation detection. Car1 navigation is already
+    // speed-limited by the DWA configuration.
+    publishCmdVel(*msg, false, false);
   }
 }
 
 void LeaderController::returnHomeCallback(const std_msgs::Bool::ConstPtr& msg) {
   if (!msg->data) {
     return_home_active_ = false;
+    geometry_msgs::Twist zero_cmd;
+    publishCmdVel(zero_cmd, true, false);
     return;
   }
-  if (!home_pose_received_) {
+  if (!ensureHomePose()) {
     ROS_WARN("Return home requested before home pose is available");
     return;
   }
+  if (!self_odom_received_) {
+    ROS_WARN("Return home requested but /robot1/odom is not available");
+    return;
+  }
+  cluster_common::Pose2D self;
+  if (return_home_use_map_) {
+    if (!lookupSelfMapPose(self)) {
+      ROS_WARN("Return home requested but %s -> %s TF is not available",
+               map_frame_.c_str(), self_frame_.c_str());
+      return;
+    }
+  } else {
+    self = cluster_common::odomToPose2D(latest_self_odom_);
+  }
+  const double dx = home_pose_.x - self.x;
+  const double dy = home_pose_.y - self.y;
+  ROS_INFO("Return home requested: current=(%.2f, %.2f, %.2f), home=(%.2f, %.2f, %.2f), dist=%.2f",
+           self.x, self.y, self.theta,
+           home_pose_.x, home_pose_.y, home_pose_.theta,
+           std::sqrt(dx * dx + dy * dy));
   return_home_active_ = true;
   current_mode_ = cluster_msgs::LeaderCmd::MODE_TELEOP;
-  ROS_INFO("Return home requested");
 }
 
 // ---------- Service Callbacks ----------
@@ -161,6 +355,9 @@ bool LeaderController::setModeCallback(
   if (req.mode == cluster_msgs::LeaderCmd::MODE_FORMATION) {
     if (req.formation <= cluster_msgs::LeaderCmd::FORMATION_TRIANGLE) {
       current_formation_ = req.formation;
+      if (current_formation_ != cluster_msgs::LeaderCmd::FORMATION_CIRCLE_SHOW) {
+        last_non_circle_formation_ = current_formation_;
+      }
     }
     // Check for custom offsets
     if (req.offset_x != 0.0 || req.offset_y != 0.0 || req.offset_yaw != 0.0) {
@@ -189,8 +386,12 @@ bool LeaderController::setFormationCallback(
   }
 
   current_formation_ = req.formation;
+  if (current_formation_ != cluster_msgs::LeaderCmd::FORMATION_CIRCLE_SHOW) {
+    last_non_circle_formation_ = current_formation_;
+  }
+  current_mode_ = cluster_msgs::LeaderCmd::MODE_FORMATION;
   use_custom_offsets_ = false;
-  ROS_INFO("SetFormation: %d", current_formation_);
+  ROS_INFO("SetFormation: %d, forcing FORMATION mode", current_formation_);
 
   res.success = true;
   res.message = "Formation set successfully";
@@ -201,6 +402,7 @@ bool LeaderController::setFormationCallback(
 
 void LeaderController::controlLoop(const ros::TimerEvent& event) {
   checkSafety();
+  updateAdaptiveFormationSpeedScale();
 
   if (return_home_active_) {
     computeReturnHome();
@@ -210,7 +412,7 @@ void LeaderController::controlLoop(const ros::TimerEvent& event) {
   if (current_mode_ != cluster_msgs::LeaderCmd::MODE_FORMATION &&
       circle_show_was_active_) {
     geometry_msgs::Twist zero_cmd;
-    cmd_vel_pub_.publish(zero_cmd);
+    publishCmdVel(zero_cmd, true, false);
     circle_show_was_active_ = false;
   }
 
@@ -236,12 +438,24 @@ void LeaderController::controlLoop(const ros::TimerEvent& event) {
 }
 
 void LeaderController::computeReturnHome() {
-  if (!self_odom_received_ || !home_pose_received_) {
+  if (!self_odom_received_ || !ensureHomePose()) {
+    ROS_WARN_THROTTLE(2.0, "Return home skipped: odom/home pose not ready");
     return_home_active_ = false;
     return;
   }
 
-  cluster_common::Pose2D self = cluster_common::odomToPose2D(latest_self_odom_);
+  cluster_common::Pose2D self;
+  if (return_home_use_map_) {
+    if (!lookupSelfMapPose(self)) {
+      ROS_WARN_THROTTLE(2.0, "Return home skipped: %s -> %s TF not ready",
+                        map_frame_.c_str(), self_frame_.c_str());
+      geometry_msgs::Twist zero_cmd;
+      publishCmdVel(zero_cmd, true, false);
+      return;
+    }
+  } else {
+    self = cluster_common::odomToPose2D(latest_self_odom_);
+  }
   const double dx = home_pose_.x - self.x;
   const double dy = home_pose_.y - self.y;
   const double distance = std::sqrt(dx * dx + dy * dy);
@@ -250,22 +464,27 @@ void LeaderController::computeReturnHome() {
   const double yaw_err = cluster_common::normalizeAngle(home_pose_.theta - self.theta);
 
   geometry_msgs::Twist cmd;
+  const double linear_limit =
+      std::min(max_linear_speed_, return_home_max_linear_speed_);
+  const double angular_limit =
+      std::min(max_angular_speed_, return_home_max_angular_speed_);
   if (distance > return_home_pos_tolerance_) {
     const double speed_scale = std::max(0.0, std::cos(heading_err));
     cmd.linear.x = cluster_common::clamp(return_home_k_v_ * distance * speed_scale,
-                                         0.0, max_linear_speed_);
+                                         0.0, linear_limit);
     cmd.angular.z = cluster_common::clamp(return_home_k_w_ * heading_err,
-                                          -max_angular_speed_, max_angular_speed_);
+                                          -angular_limit, angular_limit);
   } else if (std::fabs(yaw_err) > return_home_yaw_tolerance_) {
     cmd.angular.z = cluster_common::clamp(return_home_k_w_ * yaw_err,
-                                          -max_angular_speed_, max_angular_speed_);
+                                          -angular_limit, angular_limit);
   } else {
     return_home_active_ = false;
-    cmd_vel_pub_.publish(cmd);
+    publishCmdVel(cmd, true, false);
     ROS_INFO("Return home complete");
+    return;
   }
 
-  cmd_vel_pub_.publish(cmd);
+  publishCmdVel(cmd);
 
   cached_leader_cmd_.header.stamp = ros::Time::now();
   cached_leader_cmd_.mode = cluster_msgs::LeaderCmd::MODE_TELEOP;
@@ -276,8 +495,54 @@ void LeaderController::computeReturnHome() {
   leader_cmd_pub_.publish(cached_leader_cmd_);
 }
 
+bool LeaderController::lookupSelfMapPose(cluster_common::Pose2D& pose) {
+  try {
+    geometry_msgs::TransformStamped tf_msg = tf_buffer_.lookupTransform(
+        map_frame_, self_frame_, ros::Time(0), ros::Duration(0.05));
+    pose.x = tf_msg.transform.translation.x;
+    pose.y = tf_msg.transform.translation.y;
+    pose.theta = tf2::getYaw(tf_msg.transform.rotation);
+    return std::isfinite(pose.x) && std::isfinite(pose.y) &&
+           std::isfinite(pose.theta);
+  } catch (const tf2::TransformException& ex) {
+    ROS_WARN_THROTTLE(3.0, "Cannot lookup home/map pose %s -> %s: %s",
+                      map_frame_.c_str(), self_frame_.c_str(), ex.what());
+    return false;
+  }
+}
+
+bool LeaderController::ensureHomePose() {
+  if (home_pose_received_) {
+    return true;
+  }
+
+  if (return_home_use_map_) {
+    cluster_common::Pose2D map_pose;
+    if (!lookupSelfMapPose(map_pose)) {
+      return false;
+    }
+    home_pose_ = map_pose;
+    home_pose_received_ = true;
+    ROS_INFO("Recorded robot1 map home pose: x=%.2f y=%.2f yaw=%.2f",
+             home_pose_.x, home_pose_.y, home_pose_.theta);
+    return true;
+  }
+
+  if (!self_odom_received_) {
+    return false;
+  }
+  home_pose_ = cluster_common::odomToPose2D(latest_self_odom_);
+  home_pose_received_ = true;
+  ROS_INFO("Recorded robot1 odom home pose: x=%.2f y=%.2f yaw=%.2f",
+           home_pose_.x, home_pose_.y, home_pose_.theta);
+  return true;
+}
+
 void LeaderController::computeFormationTarget() {
-  if (!self_odom_received_) return;
+  if (!self_odom_received_) {
+    ROS_WARN_THROTTLE(2.0, "Formation skipped: /robot1/odom not received");
+    return;
+  }
 
   auto leader_pose = cluster_common::odomToPose2D(latest_self_odom_);
   const bool circle_show =
@@ -291,10 +556,11 @@ void LeaderController::computeFormationTarget() {
     show_cmd.angular.z = cluster_common::clamp(
         circle_show_angular_speed_,
         -max_angular_speed_, max_angular_speed_);
-    cmd_vel_pub_.publish(show_cmd);
+    show_cmd = applyAdaptiveFormationSpeed(show_cmd);
+    publishCmdVel(show_cmd);
     circle_show_was_active_ = true;
   } else if (circle_show_was_active_) {
-    cmd_vel_pub_.publish(show_cmd);
+    publishCmdVel(show_cmd, true, false);
     circle_show_was_active_ = false;
   }
 
@@ -318,15 +584,16 @@ void LeaderController::computeFormationTarget() {
   cached_leader_cmd_.leader_vx = circle_show
       ? show_cmd.linear.x
       : teleop_fresh
-      ? latest_teleop_cmd_.linear.x
+      ? last_cmd_vel_.linear.x
       : latest_self_odom_.twist.twist.linear.x;
   cached_leader_cmd_.leader_vyaw = circle_show
       ? show_cmd.angular.z
       : teleop_fresh
-      ? latest_teleop_cmd_.angular.z
+      ? last_cmd_vel_.angular.z
       : latest_self_odom_.twist.twist.angular.z;
   cached_leader_cmd_.target_pose = target;
-  cached_leader_cmd_.speed_limit = speed_limit_;
+  cached_leader_cmd_.speed_limit =
+      speed_limit_ * adaptive_formation_speed_scale_;
 
   leader_cmd_pub_.publish(cached_leader_cmd_);
 }
@@ -358,6 +625,10 @@ void LeaderController::computeFollowTarget() {
 }
 
 void LeaderController::checkSafety() {
+  if (!follower_watchdog_enabled_ && !formation_error_watchdog_enabled_) {
+    return;
+  }
+
   ros::Time now = ros::Time::now();
 
   // Check follower connection
@@ -401,7 +672,8 @@ void LeaderController::checkSafety() {
   }
 
   // Check formation error
-  if (current_mode_ == cluster_msgs::LeaderCmd::MODE_FORMATION) {
+  if (formation_error_watchdog_enabled_ &&
+      current_mode_ == cluster_msgs::LeaderCmd::MODE_FORMATION) {
     double error = 0.0;
     bool has_error = false;
     if (follower_status_received_) {
@@ -426,12 +698,13 @@ void LeaderController::checkSafety() {
     }
   }
 
-  if (follower_lost && current_mode_ != cluster_msgs::LeaderCmd::MODE_IDLE &&
+  if (follower_watchdog_enabled_ &&
+      follower_lost && current_mode_ != cluster_msgs::LeaderCmd::MODE_IDLE &&
       current_mode_ != cluster_msgs::LeaderCmd::MODE_TELEOP) {
     ROS_WARN_THROTTLE(2.0, "Follower connection lost! Forcing IDLE.");
     current_mode_ = cluster_msgs::LeaderCmd::MODE_IDLE;
     geometry_msgs::Twist zero_cmd;
-    cmd_vel_pub_.publish(zero_cmd);
+    publishCmdVel(zero_cmd, true, false);
   }
 }
 

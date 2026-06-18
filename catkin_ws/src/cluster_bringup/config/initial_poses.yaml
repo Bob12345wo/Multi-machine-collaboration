@@ -1,0 +1,29 @@
+# Startup AMCL poses in the shared map frame.
+#
+# Use this when the robots are placed at fixed startup marks before each test.
+# x/y are meters in map. yaw is radians. If all robots face the same map
+# direction, keep the yaw values identical.
+#
+# Current default layout:
+#   robot1: front leader
+#   robot2: rear/right follower
+#   robot3: rear/left follower
+map_frame: map
+publish_delay: 2.0
+publish_count: 5
+publish_period: 0.3
+covariance_xy: 0.25
+covariance_yaw: 0.068
+robots:
+  robot1:
+    x: 0.0
+    y: 0.0
+    yaw: 0.0
+  robot2:
+    x: -0.8
+    y: -0.8
+    yaw: 0.0
+  robot3:
+    x: -0.8
+    y: 0.8
+    yaw: 0.0

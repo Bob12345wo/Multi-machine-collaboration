@@ -1,0 +1,102 @@
+<launch>
+  <!-- Optional move_base-based follower experiment for robot2 and robot3. -->
+  <arg name="enable_avoidance" default="true" />
+  <arg name="start_slot_planner" default="true" />
+  <arg name="start_nav_monitor" default="true" />
+  <arg name="nav_debug" default="true" />
+  <arg name="robot2_scan" default="/robot2/scan" />
+  <arg name="robot3_scan" default="/robot3/scan" />
+
+  <node if="$(arg start_slot_planner)"
+        pkg="cluster_following" type="formation_slot_planner_node"
+        name="formation_slot_planner" output="screen">
+    <rosparam file="$(find cluster_bringup)/config/formation_slot_planner_params.yaml" />
+    <param name="debug_enabled" value="false" />
+  </node>
+
+  <group ns="robot2">
+    <node pkg="move_base" type="move_base" name="move_base" output="screen" required="true">
+      <remap from="cmd_vel" to="/robot2/cmd_vel_raw" />
+      <rosparam file="$(find cluster_bringup)/config/nav/move_base_params.yaml" />
+      <rosparam file="$(find cluster_bringup)/config/nav/costmap_common_params.yaml" ns="global_costmap" />
+      <rosparam file="$(find cluster_bringup)/config/nav/costmap_common_params.yaml" ns="local_costmap" />
+      <rosparam file="$(find cluster_bringup)/config/nav/global_costmap_params.yaml" />
+      <rosparam file="$(find cluster_bringup)/config/nav/local_costmap_params.yaml" />
+      <rosparam file="$(find cluster_bringup)/config/nav/dwa_local_planner_params.yaml" />
+      <param name="global_costmap/robot_base_frame" value="robot2/base_link" />
+      <param name="local_costmap/global_frame" value="robot2/odom" />
+      <param name="local_costmap/robot_base_frame" value="robot2/base_link" />
+      <param name="global_costmap/obstacles_laser/scan/topic" value="$(arg robot2_scan)" />
+      <param name="local_costmap/obstacles_laser/scan/topic" value="$(arg robot2_scan)" />
+    </node>
+  </group>
+
+  <group ns="robot3">
+    <node pkg="move_base" type="move_base" name="move_base" output="screen" required="true">
+      <remap from="cmd_vel" to="/robot3/cmd_vel_raw" />
+      <rosparam file="$(find cluster_bringup)/config/nav/move_base_params.yaml" />
+      <rosparam file="$(find cluster_bringup)/config/nav/costmap_common_params.yaml" ns="global_costmap" />
+      <rosparam file="$(find cluster_bringup)/config/nav/costmap_common_params.yaml" ns="local_costmap" />
+      <rosparam file="$(find cluster_bringup)/config/nav/global_costmap_params.yaml" />
+      <rosparam file="$(find cluster_bringup)/config/nav/local_costmap_params.yaml" />
+      <rosparam file="$(find cluster_bringup)/config/nav/dwa_local_planner_params.yaml" />
+      <param name="global_costmap/robot_base_frame" value="robot3/base_link" />
+      <param name="local_costmap/global_frame" value="robot3/odom" />
+      <param name="local_costmap/robot_base_frame" value="robot3/base_link" />
+      <param name="global_costmap/obstacles_laser/scan/topic" value="$(arg robot3_scan)" />
+      <param name="local_costmap/obstacles_laser/scan/topic" value="$(arg robot3_scan)" />
+    </node>
+  </group>
+
+  <node pkg="cluster_bringup" type="assigned_goal_relay.py"
+        name="robot2_assigned_goal_relay" output="screen">
+    <rosparam file="$(find cluster_bringup)/config/nav/assigned_goal_relay_params.yaml" />
+    <param name="debug_enabled" value="$(arg nav_debug)" />
+    <param name="input_goal_topic" value="/robot2/assigned_goal" />
+    <param name="output_goal_topic" value="/robot2/move_base_simple/goal" />
+  </node>
+
+  <node pkg="cluster_bringup" type="assigned_goal_relay.py"
+        name="robot3_assigned_goal_relay" output="screen">
+    <rosparam file="$(find cluster_bringup)/config/nav/assigned_goal_relay_params.yaml" />
+    <param name="debug_enabled" value="$(arg nav_debug)" />
+    <param name="input_goal_topic" value="/robot3/assigned_goal" />
+    <param name="output_goal_topic" value="/robot3/move_base_simple/goal" />
+  </node>
+
+  <node if="$(arg start_nav_monitor)"
+        pkg="cluster_bringup" type="nav_status_monitor.py"
+        name="robot2_nav_status_monitor" output="screen">
+    <param name="robot" value="robot2" />
+  </node>
+
+  <node if="$(arg start_nav_monitor)"
+        pkg="cluster_bringup" type="nav_status_monitor.py"
+        name="robot3_nav_status_monitor" output="screen">
+    <param name="robot" value="robot3" />
+  </node>
+
+  <node if="$(arg enable_avoidance)"
+        pkg="cluster_following" type="cmd_safety_filter_node"
+        name="robot2_cmd_safety_filter" output="screen">
+    <rosparam file="$(find cluster_bringup)/config/cmd_safety_filter_params.yaml" />
+    <param name="input_cmd_topic" value="/robot2/cmd_vel_raw" />
+    <param name="output_cmd_topic" value="/robot2/cmd_vel" />
+    <param name="scan_topic" value="$(arg robot2_scan)" />
+    <param name="enable_topic" value="/robot2/avoidance_enabled" />
+    <param name="follower_frame" value="robot2/base_link" />
+    <param name="peer_frame" value="robot3/base_link" />
+  </node>
+
+  <node if="$(arg enable_avoidance)"
+        pkg="cluster_following" type="cmd_safety_filter_node"
+        name="robot3_cmd_safety_filter" output="screen">
+    <rosparam file="$(find cluster_bringup)/config/cmd_safety_filter_params.yaml" />
+    <param name="input_cmd_topic" value="/robot3/cmd_vel_raw" />
+    <param name="output_cmd_topic" value="/robot3/cmd_vel" />
+    <param name="scan_topic" value="$(arg robot3_scan)" />
+    <param name="enable_topic" value="/robot2/avoidance_enabled" />
+    <param name="follower_frame" value="robot3/base_link" />
+    <param name="peer_frame" value="robot2/base_link" />
+  </node>
+</launch>

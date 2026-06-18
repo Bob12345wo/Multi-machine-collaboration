@@ -1,0 +1,28 @@
+<launch>
+  <!--
+    Car1-only move_base entry.
+
+    move_base output is remapped to /robot1/nav_vel instead of /robot1/cmd_vel.
+    leader_controller remains the only /robot1/cmd_vel publisher and continues
+    publishing /robot1/leader_cmd for robot2/robot3 formation following.
+  -->
+  <arg name="robot1_scan" default="/robot1/scan" />
+
+  <group ns="robot1">
+    <node pkg="move_base" type="move_base" name="move_base" output="screen"
+          required="true" clear_params="true">
+      <remap from="cmd_vel" to="/robot1/nav_vel" />
+      <rosparam file="$(find cluster_bringup)/config/nav/move_base_params.yaml" />
+      <rosparam file="$(find cluster_bringup)/config/nav/costmap_common_params.yaml" ns="global_costmap" />
+      <rosparam file="$(find cluster_bringup)/config/nav/costmap_common_params.yaml" ns="local_costmap" />
+      <rosparam file="$(find cluster_bringup)/config/nav/global_costmap_params.yaml" />
+      <rosparam file="$(find cluster_bringup)/config/nav/local_costmap_params.yaml" />
+      <rosparam file="$(find cluster_bringup)/config/nav/dwa_local_planner_params.yaml" />
+      <param name="global_costmap/robot_base_frame" value="robot1/base_link" />
+      <param name="local_costmap/global_frame" value="robot1/odom" />
+      <param name="local_costmap/robot_base_frame" value="robot1/base_link" />
+      <param name="global_costmap/obstacles_laser/scan/topic" value="$(arg robot1_scan)" />
+      <param name="local_costmap/obstacles_laser/scan/topic" value="$(arg robot1_scan)" />
+    </node>
+  </group>
+</launch>

@@ -4,12 +4,45 @@ max_linear_speed: 0.8
 max_angular_speed: 1.0
 
 # Safety
+follower_watchdog_enabled: false
+formation_error_watchdog_enabled: false
 follower_lost_timeout: 3.0
 max_formation_error: 2.0
 max_error_duration: 5.0
 speed_limit: 0.6
 
+# Slow car1 progressively when either follower falls behind. This is a soft
+# coordination layer: it never forces IDLE and does not alter collision radii.
+adaptive_formation_speed_enabled: true
+formation_full_speed_error: 0.15
+formation_min_speed_error: 0.55
+formation_min_speed_scale: 0.35
+formation_status_timeout: 0.6
+# Preserve steering authority while reducing forward speed.
+formation_angular_scale_floor: 0.65
+# Reduce speed quickly, then restore it gradually after followers recover.
+formation_speed_attack_alpha: 0.35
+formation_speed_release_alpha: 0.08
+
+# car1 command shaping. Manual keyboard commands stay direct; these mainly
+# smooth automatic circle-show and return-home commands.
+cmd_filter_alpha: 0.90
+cmd_slew_linear: 1.2
+cmd_slew_angular: 2.4
+
+# Key 0 return-home tuning. Home is recorded in the shared map frame when AMCL
+# is available, so circle driving and odom drift do not corrupt the return point.
+return_home_use_map: true
+map_frame: map
+self_frame: robot1/base_link
+return_home_pos_tolerance: 0.10
+return_home_yaw_tolerance: 0.15
+return_home_k_v: 0.45
+return_home_k_w: 0.65
+return_home_max_linear_speed: 0.30
+return_home_max_angular_speed: 0.50
+
 # Key 3 circle-show formation. car1 drives a slow circle and followers take
 # 120-degree phase positions on the same circle.
 circle_show_radius: 0.5
-circle_show_angular_speed: 0.32
+circle_show_angular_speed: 0.16

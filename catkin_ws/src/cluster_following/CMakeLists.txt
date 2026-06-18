@@ -70,6 +70,20 @@ add_dependencies(map_follower_controller_node
   ${${PROJECT_NAME}_EXPORTED_TARGETS}
 )
 
+add_executable(formation_slot_planner_node
+  src/formation_slot_planner_node.cpp
+)
+
+target_link_libraries(formation_slot_planner_node
+  cluster_common
+  ${catkin_LIBRARIES}
+)
+
+add_dependencies(formation_slot_planner_node
+  ${catkin_EXPORTED_TARGETS}
+  ${${PROJECT_NAME}_EXPORTED_TARGETS}
+)
+
 add_executable(cmd_safety_filter_node
   src/cmd_safety_filter_node.cpp
 )

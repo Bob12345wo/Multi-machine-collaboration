@@ -15,6 +15,8 @@
   <arg name="base_port" default="ttyTHS1" />
   <arg name="map_file" default="$(find limo_bringup)/maps/cluster_map.yaml" />
   <arg name="start_map_follower" default="false" />
+  <arg name="auto_initial_pose" default="true" />
+  <arg name="initial_pose_config" default="$(find cluster_bringup)/config/initial_poses.yaml" />
 
   <include file="$(find cluster_bringup)/launch/car1_no_lidar.launch">
     <arg name="mode" value="$(arg mode)" />
@@ -34,6 +36,12 @@
     <arg name="robot2_scan" value="/robot2/scan" />
     <arg name="robot3_scan" value="/robot3/scan" />
   </include>
+
+  <node if="$(arg auto_initial_pose)"
+        pkg="cluster_bringup" type="set_initial_poses.py"
+        name="cluster_initial_pose_setter" output="screen">
+    <rosparam file="$(arg initial_pose_config)" command="load" />
+  </node>
 
   <group if="$(arg start_map_follower)">
     <include file="$(find cluster_bringup)/launch/map_follower.launch" />

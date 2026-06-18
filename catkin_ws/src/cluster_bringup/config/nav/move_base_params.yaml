@@ -1,0 +1,26 @@
+base_global_planner: global_planner/GlobalPlanner
+base_local_planner: dwa_local_planner/DWAPlannerROS
+
+shutdown_costmaps: false
+recovery_behavior_enabled: false
+clearing_rotation_allowed: false
+# Keep navigation commands comfortably above the leader command freshness
+# window and below the 20 Hz formation loop to avoid bursty car1 motion.
+controller_frequency: 10.0
+controller_patience: 5.0
+# A zero frequency busy-loops when the first plan fails. Retry at 1 Hz so a
+# transient TF/costmap mismatch can recover without flooding logs and starving
+# the web/teleop callbacks.
+planner_frequency: 1.0
+planner_patience: 8.0
+oscillation_timeout: 18.0
+oscillation_distance: 0.15
+conservative_reset_dist: 1.5
+
+GlobalPlanner:
+  allow_unknown: true
+  default_tolerance: 0.20
+  use_dijkstra: true
+  use_quadratic: true
+  use_grid_path: false
+  old_navfn_behavior: false

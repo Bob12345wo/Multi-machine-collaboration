@@ -1,0 +1,48 @@
+DWAPlannerROS:
+  max_vel_trans: 0.26
+  # Permit a zero-translation trajectory so DWA can turn in place before
+  # entering a path instead of rejecting every low-speed startup sample.
+  min_vel_trans: 0.0
+  max_vel_x: 0.24
+  # The LIMO should rotate onto the path instead of reversing toward a goal.
+  # Reverse trajectories also make formation followers interpret the leader
+  # heading and motion direction inconsistently.
+  min_vel_x: 0.0
+  max_vel_y: 0.0
+  min_vel_y: 0.0
+  max_vel_theta: 0.45
+  # Keep this below acc_lim_theta / controller_frequency. Otherwise the first
+  # DWA dynamic window cannot contain any admissible non-zero rotation and the
+  # robot remains stopped until move_base reports oscillation.
+  min_vel_theta: 0.05
+  acc_lim_x: 0.35
+  acc_lim_y: 0.0
+  # At 10 Hz this permits a 0.12 rad/s first-step command, enough to cross the
+  # chassis deadband without creating an unreachable velocity window.
+  acc_lim_theta: 1.2
+  acc_lim_trans: 0.35
+
+  xy_goal_tolerance: 0.18
+  yaw_goal_tolerance: 0.15
+  latch_xy_goal_tolerance: false
+  trans_stopped_vel: 0.02
+  theta_stopped_vel: 0.05
+
+  sim_time: 1.0
+  sim_granularity: 0.05
+  angular_sim_granularity: 0.05
+  vx_samples: 8
+  vy_samples: 1
+  vth_samples: 12
+
+  path_distance_bias: 24.0
+  goal_distance_bias: 26.0
+  occdist_scale: 0.05
+  forward_point_distance: 0.25
+  stop_time_buffer: 0.35
+  oscillation_reset_dist: 0.08
+  oscillation_reset_angle: 0.25
+  prune_plan: true
+  penalize_negative_x: true
+  use_dwa: true
+  restore_defaults: false

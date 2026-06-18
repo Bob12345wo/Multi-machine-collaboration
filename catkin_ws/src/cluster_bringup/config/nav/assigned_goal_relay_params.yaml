@@ -1,0 +1,10 @@
+# Throttle formation slot goals before sending them to move_base.
+# formation_slot_planner publishes at 10 Hz, but move_base should only receive
+# a new goal when the slot meaningfully changes.
+required_frame: map
+min_xy_delta: 0.35
+min_yaw_delta: 0.50
+min_publish_period: 2.0
+force_republish_period: 30.0
+debug_enabled: true
+debug_period: 1.0

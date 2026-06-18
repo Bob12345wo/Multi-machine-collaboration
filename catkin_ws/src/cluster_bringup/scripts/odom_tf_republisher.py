@@ -27,13 +27,16 @@ class OdomTfRepublisher(object):
         self.base_frame = rospy.get_param('~base_frame')
         self.br = tf2_ros.TransformBroadcaster()
         self.sub = rospy.Subscriber(self.odom_topic, Odometry, self.callback,
-                                    queue_size=10)
+                                    queue_size=1, tcp_nodelay=True)
         rospy.loginfo("Republishing %s as TF %s -> %s",
                       self.odom_topic, self.odom_frame, self.base_frame)
 
     def callback(self, msg):
         tf_msg = TransformStamped()
-        tf_msg.header.stamp = msg.header.stamp if msg.header.stamp else rospy.Time.now()
+        # Use wall-clock ROS time for the TF bridge. Some base drivers reuse or
+        # delay odom header stamps; in a shared TF tree that makes followers see
+        # stale odom transforms even while /robotX/odom is arriving normally.
+        tf_msg.header.stamp = rospy.Time.now()
         tf_msg.header.frame_id = self.odom_frame
         tf_msg.child_frame_id = self.base_frame
         tf_msg.transform.translation.x = msg.pose.pose.position.x

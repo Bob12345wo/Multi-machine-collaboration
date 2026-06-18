@@ -1,0 +1,28 @@
+<launch>
+  <arg name="host" default="0.0.0.0" />
+  <arg name="port" default="8080" />
+  <arg name="frame" default="map" />
+  <arg name="trail_length" default="180" />
+  <arg name="enable_tf" default="true" />
+  <arg name="show_robot3" default="true" />
+  <arg name="pose_timeout" default="1.5" />
+  <arg name="teleop_topic" default="/robot1/teleop_vel" />
+  <arg name="nav_goal_topic" default="/robot1/move_base_simple/goal" />
+  <arg name="max_teleop_vx" default="0.35" />
+  <arg name="max_teleop_wz" default="0.65" />
+
+  <node pkg="cluster_bringup" type="web_visualizer_server.py"
+        name="cluster_web_visualizer" output="screen">
+    <param name="host" value="$(arg host)" />
+    <param name="port" value="$(arg port)" />
+    <param name="frame" value="$(arg frame)" />
+    <param name="trail_length" value="$(arg trail_length)" />
+    <param name="enable_tf" value="$(arg enable_tf)" />
+    <param name="show_robot3" value="$(arg show_robot3)" />
+    <param name="pose_timeout" value="$(arg pose_timeout)" />
+    <param name="teleop_topic" value="$(arg teleop_topic)" />
+    <param name="nav_goal_topic" value="$(arg nav_goal_topic)" />
+    <param name="max_teleop_vx" value="$(arg max_teleop_vx)" />
+    <param name="max_teleop_wz" value="$(arg max_teleop_wz)" />
+  </node>
+</launch>

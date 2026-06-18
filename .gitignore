@@ -20,3 +20,10 @@ Thumbs.db
 # Runtime logs
 *.log
 *.bag
+
+# Imported reference projects and local maintenance files
+Multi-machine-collaboration/
+ros1_melodic/wheeltec_multi.zip
+fix_car2_static_arp.ps1
+fix_mobile_hotspot.ps1
+repair_mobile_hotspot_admin.ps1

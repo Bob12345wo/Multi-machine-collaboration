@@ -1,0 +1,55 @@
+# Dynamic formation slot planner.
+# It generates formation slots in map frame and assigns robot2/robot3 to the
+# closest available slot, so robot IDs do not have to stay hard-bound to left or
+# right positions during formation switches.
+enabled: true
+map_frame: map
+leader_frame: robot1/base_link
+robot2_frame: robot2/base_link
+robot3_frame: robot3/base_link
+leader_odom_frame: robot1/odom
+robot2_odom_frame: robot2/odom
+robot3_odom_frame: robot3/odom
+leader_cmd_topic: /robot1/leader_cmd
+robot2_goal_topic: /robot2/assigned_goal
+robot3_goal_topic: /robot3/assigned_goal
+
+loop_rate: 10
+leader_cmd_timeout: 1.0
+formation_spacing: 0.8
+circle_show_radius: 0.5
+assignment_switch_margin: 0.25
+# Keep adaptive slot assignment, but reject swaps that would make robot2 and
+# robot3 cross through each other during formation switches.
+lock_robot_slots: false
+prevent_crossing_assignment: true
+assignment_min_path_separation: 0.55
+allow_runtime_reassignment: false
+
+# Before sending a final formation slot to each follower, keep a stable
+# intermediate waypoint if the straight segment would pass too close to car1 or
+# the other follower. Conflicting follower paths are released in two stages.
+waypoint_planning_enabled: true
+leader_keepout_radius: 0.60
+leader_detour_radius: 0.90
+peer_keepout_radius: 0.55
+peer_detour_radius: 0.85
+waypoint_step: 0.65
+waypoint_goal_tolerance: 0.18
+published_goal_min_separation: 0.75
+waypoint_leader_static_v_threshold: 0.04
+waypoint_leader_static_w_threshold: 0.04
+# move_base briefly publishes zero commands while replanning or changing from
+# translation to rotation. Do not start staged yielding/detours for those gaps.
+waypoint_leader_static_dwell: 1.0
+
+debug_enabled: false
+debug_period: 0.8
+tf_max_age: 2.5
+map_tf_future_tolerance: 1.2
+
+# Keep slot updates continuous through short AMCL/TF gaps. Keep the prediction
+# window short so stale localization cannot keep moving the formation target.
+enable_odom_prediction: true
+prediction_max_age: 6.0
+prediction_odom_max_age: 1.0
