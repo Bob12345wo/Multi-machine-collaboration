@@ -5,7 +5,7 @@
 
 namespace cluster_formation {
 
-enum class CircleShowPhase { NORMAL, ACTIVE, RECOVERING };
+enum class CircleShowPhase { NORMAL, PREPARING, ACTIVE, RECOVERING };
 
 struct CircleCommand {
   double linear_x;
@@ -25,13 +25,40 @@ class CircleShowRecovery {
       return false;
     }
     recovery_formation_ = recovery_formation;
+    phase_ = CircleShowPhase::PREPARING;
+    settled_since_ = -1.0;
+    return true;
+  }
+
+  bool updateStart(bool robot2_settled, bool robot3_settled,
+                   double now_sec, double dwell_sec) {
+    if (phase_ != CircleShowPhase::PREPARING) {
+      return false;
+    }
+    if (!robot2_settled || !robot3_settled) {
+      settled_since_ = -1.0;
+      return false;
+    }
+    if (settled_since_ < 0.0) {
+      settled_since_ = now_sec;
+      if (dwell_sec <= 0.0) {
+        phase_ = CircleShowPhase::ACTIVE;
+        settled_since_ = -1.0;
+        return true;
+      }
+      return false;
+    }
+    if (now_sec - settled_since_ < dwell_sec) {
+      return false;
+    }
     phase_ = CircleShowPhase::ACTIVE;
     settled_since_ = -1.0;
     return true;
   }
 
   bool requestExit() {
-    if (phase_ != CircleShowPhase::ACTIVE) {
+    if (phase_ != CircleShowPhase::PREPARING &&
+        phase_ != CircleShowPhase::ACTIVE) {
       return false;
     }
     phase_ = CircleShowPhase::RECOVERING;

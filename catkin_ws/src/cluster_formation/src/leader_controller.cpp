@@ -44,6 +44,9 @@ LeaderController::LeaderController(const ros::NodeHandle& nh, const ros::NodeHan
   pnh_.param<std::string>("self_frame", self_frame_, "robot1/base_link");
   pnh_.param("circle_show_radius", circle_show_radius_, 0.5);
   pnh_.param("circle_show_angular_speed", circle_show_angular_speed_, 0.32);
+  pnh_.param("circle_start_settle_error", circle_start_settle_error_, 0.16);
+  pnh_.param("circle_start_settle_dwell", circle_start_settle_dwell_, 0.6);
+  pnh_.param("circle_pause_error", circle_pause_error_, 0.30);
   pnh_.param("circle_exit_settle_error", circle_exit_settle_error_, 0.12);
   pnh_.param("circle_exit_settle_dwell", circle_exit_settle_dwell_, 1.0);
   pnh_.param("cmd_filter_alpha", cmd_filter_alpha_, 0.75);
@@ -62,6 +65,8 @@ LeaderController::LeaderController(const ros::NodeHandle& nh, const ros::NodeHan
   pnh_.param("formation_speed_release_alpha",
              formation_speed_release_alpha_, 0.08);
   adaptive_formation_speed_scale_ = 1.0;
+  latest_formation_max_error_ = 0.0;
+  formation_status_fresh_ = false;
   controller_start_time_ = ros::Time::now();
 
   std::string initial_mode;
@@ -212,6 +217,9 @@ void LeaderController::updateAdaptiveFormationSpeedScale() {
     has_fresh_status = true;
   }
 
+  latest_formation_max_error_ = max_error;
+  formation_status_fresh_ = has_fresh_status;
+
   double target_scale = 1.0;
   if (has_fresh_status && max_error > formation_full_speed_error_) {
     const double span = std::max(
@@ -331,7 +339,8 @@ void LeaderController::circleExitCallback(const std_msgs::Bool::ConstPtr& msg) {
 
 bool LeaderController::followerSettled(
     const cluster_msgs::FollowerStatus& status,
-    const ros::Time& receipt_time, const ros::Time& now) const {
+    const ros::Time& receipt_time, const ros::Time& now,
+    double settle_error) const {
   if (receipt_time.isZero() ||
       (now - receipt_time).toSec() > formation_status_timeout_ ||
       !std::isfinite(status.error_dist)) {
@@ -341,7 +350,7 @@ bool LeaderController::followerSettled(
       status.state == cluster_msgs::FollowerStatus::STATE_EMERGENCY) {
     return false;
   }
-  return std::fabs(status.error_dist) <= circle_exit_settle_error_;
+  return std::fabs(status.error_dist) <= settle_error;
 }
 
 // ---------- Service Callbacks ----------
@@ -588,13 +597,36 @@ void LeaderController::computeFormationTarget() {
     circle_show_was_active_ = false;
     const ros::Time now = ros::Time::now();
     const bool robot2_settled = followerSettled(
-        latest_follower_status_, last_follower_status_time_, now);
+        latest_follower_status_, last_follower_status_time_, now,
+        circle_exit_settle_error_);
     const bool robot3_settled = followerSettled(
-        latest_follower3_status_, last_follower3_status_time_, now);
+        latest_follower3_status_, last_follower3_status_time_, now,
+        circle_exit_settle_error_);
     if (circle_recovery_.updateRecovery(robot2_settled, robot3_settled,
                                         now.toSec(), circle_exit_settle_dwell_)) {
       ROS_INFO("CIRCLE_SHOW recovery complete in formation %u",
                current_formation_);
+    }
+  }
+
+  const bool circle_preparing =
+      current_formation_ == cluster_msgs::LeaderCmd::FORMATION_CIRCLE_SHOW &&
+      !use_custom_offsets_ &&
+      circle_recovery_.phase() == CircleShowPhase::PREPARING;
+  if (circle_preparing) {
+    geometry_msgs::Twist stop;
+    publishCmdVel(stop, true, false);
+    circle_show_was_active_ = false;
+    const ros::Time now = ros::Time::now();
+    const bool robot2_settled = followerSettled(
+        latest_follower_status_, last_follower_status_time_, now,
+        circle_start_settle_error_);
+    const bool robot3_settled = followerSettled(
+        latest_follower3_status_, last_follower3_status_time_, now,
+        circle_start_settle_error_);
+    if (circle_recovery_.updateStart(robot2_settled, robot3_settled,
+                                     now.toSec(), circle_start_settle_dwell_)) {
+      ROS_INFO("CIRCLE_SHOW synchronized start");
     }
   }
 
@@ -611,8 +643,15 @@ void LeaderController::computeFormationTarget() {
     show_cmd.angular.z = cluster_common::clamp(
         circle_show_angular_speed_,
         -max_angular_speed_, max_angular_speed_);
-    const double circle_scale = adaptive_formation_speed_enabled_
+    double circle_scale = adaptive_formation_speed_enabled_
         ? adaptive_formation_speed_scale_ : 1.0;
+    if (formation_status_fresh_ &&
+        latest_formation_max_error_ > circle_pause_error_) {
+      circle_scale = 0.0;
+      ROS_WARN_THROTTLE(1.0,
+          "CIRCLE_SHOW paused: follower error %.2fm exceeds %.2fm",
+          latest_formation_max_error_, circle_pause_error_);
+    }
     const CircleCommand scaled = CircleShowRecovery::scaleCircleCommand(
         {show_cmd.linear.x, show_cmd.angular.z}, circle_scale);
     show_cmd.linear.x = scaled.linear_x;
@@ -643,11 +682,15 @@ void LeaderController::computeFormationTarget() {
       (ros::Time::now() - last_teleop_cmd_time_).toSec() < 0.3;
   cached_leader_cmd_.leader_vx = circle_show
       ? show_cmd.linear.x
+      : circle_preparing
+      ? 0.0
       : teleop_fresh
       ? last_cmd_vel_.linear.x
       : latest_self_odom_.twist.twist.linear.x;
   cached_leader_cmd_.leader_vyaw = circle_show
       ? show_cmd.angular.z
+      : circle_preparing
+      ? 0.0
       : teleop_fresh
       ? last_cmd_vel_.angular.z
       : latest_self_odom_.twist.twist.angular.z;

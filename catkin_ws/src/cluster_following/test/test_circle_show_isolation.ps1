@@ -7,6 +7,12 @@ if ($planner -notmatch "CircleOrbitSlotPlanner") {
 if ($planner -notmatch "FORMATION_CIRCLE_SHOW[\s\S]*circle_orbit_") {
   throw "virtual orbit helper must be isolated to FORMATION_CIRCLE_SHOW"
 }
+if ($planner -notmatch "circle_show_preparing") {
+  throw "CIRCLE_SHOW must keep adaptive slot assignment during its preparing phase"
+}
+if ($planner -notmatch "circle_show_preparing[\s\S]*swap_cost") {
+  throw "CIRCLE_SHOW preparing assignment must be based on closest slot cost"
+}
 if ($follower -notmatch "circle_assigned_goal") {
   throw "map follower must guard the assigned-goal handling specifically for CIRCLE_SHOW"
 }

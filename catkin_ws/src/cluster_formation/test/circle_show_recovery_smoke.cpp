@@ -7,8 +7,12 @@ int main() {
   cluster_formation::CircleShowRecovery state;
 
   assert(state.enter(3U));
-  assert(state.phase() == cluster_formation::CircleShowPhase::ACTIVE);
+  assert(state.phase() == cluster_formation::CircleShowPhase::PREPARING);
   assert(!state.enter(1U));
+  assert(!state.updateStart(true, false, 0.0, 0.5));
+  assert(!state.updateStart(true, true, 0.1, 0.5));
+  assert(state.updateStart(true, true, 0.6, 0.5));
+  assert(state.phase() == cluster_formation::CircleShowPhase::ACTIVE);
   assert(state.requestExit());
   assert(!state.requestExit());
 

@@ -595,8 +595,17 @@ private:
         distance2(robot2, slots[1].pose) + distance2(robot3, slots[0].pose);
     const bool keep_safe = assignmentSafe(robot2, robot3, slots[0], slots[1]);
     const bool swap_safe = assignmentSafe(robot2, robot3, slots[1], slots[0]);
+    const bool circle_show =
+        latest_leader_cmd_.formation == cluster_msgs::LeaderCmd::FORMATION_CIRCLE_SHOW;
+    const bool circle_show_preparing = circle_show &&
+        std::fabs(latest_leader_cmd_.leader_vx) < waypoint_leader_static_v_threshold_ &&
+        std::fabs(latest_leader_cmd_.leader_vyaw) < waypoint_leader_static_w_threshold_;
     bool swap = false;
     if (lock_robot_slots_) {
+      assignment_initialized_ = true;
+    } else if (circle_show_preparing) {
+      swap = (swap_safe && (!keep_safe ||
+          swap_cost + assignment_switch_margin_ < keep_order_cost));
       assignment_initialized_ = true;
     } else if (!assignment_initialized_) {
       swap = (swap_safe && (!keep_safe ||

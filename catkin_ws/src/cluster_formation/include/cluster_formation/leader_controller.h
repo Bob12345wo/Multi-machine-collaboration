@@ -71,7 +71,8 @@ private:
       const geometry_msgs::Twist& cmd) const;
   bool followerSettled(const cluster_msgs::FollowerStatus& status,
                        const ros::Time& receipt_time,
-                       const ros::Time& now) const;
+                       const ros::Time& now,
+                       double settle_error) const;
 
   // Node handles
   ros::NodeHandle nh_;
@@ -154,6 +155,9 @@ private:
   std::string self_frame_;
   double circle_show_radius_;
   double circle_show_angular_speed_;
+  double circle_start_settle_error_;
+  double circle_start_settle_dwell_;
+  double circle_pause_error_;
   double circle_exit_settle_error_;
   double circle_exit_settle_dwell_;
   double cmd_filter_alpha_;
@@ -168,6 +172,8 @@ private:
   double formation_speed_attack_alpha_;
   double formation_speed_release_alpha_;
   double adaptive_formation_speed_scale_;
+  double latest_formation_max_error_;
+  bool formation_status_fresh_;
 
   // LeaderCmd cache
   cluster_msgs::LeaderCmd cached_leader_cmd_;

@@ -11,3 +11,15 @@ foreach ($file in $files) {
     throw "circle_show_radius must be 0.80 in $file"
   }
 }
+
+$formation = Get-Content -Raw (Join-Path $root 'config\formation_params.yaml')
+foreach ($param in @(
+    'circle_start_settle_error',
+    'circle_start_settle_dwell',
+    'circle_pause_error',
+    'circle_exit_settle_error',
+    'circle_exit_settle_dwell')) {
+  if ($formation -notmatch "(?m)^$($param):\s*[0-9.]+\s*$") {
+    throw "$param must be configured for synchronized CIRCLE_SHOW"
+  }
+}
