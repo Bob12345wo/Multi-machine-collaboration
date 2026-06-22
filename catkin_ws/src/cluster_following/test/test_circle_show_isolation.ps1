@@ -1,0 +1,17 @@
+$planner = Get-Content -Raw -LiteralPath "$PSScriptRoot/../src/formation_slot_planner_node.cpp"
+$follower = Get-Content -Raw -LiteralPath "$PSScriptRoot/../src/map_follower_controller_node.cpp"
+
+if ($planner -notmatch "CircleOrbitSlotPlanner") {
+  throw "formation_slot_planner must use the CIRCLE_SHOW-only virtual orbit helper"
+}
+if ($planner -notmatch "FORMATION_CIRCLE_SHOW[\s\S]*circle_orbit_") {
+  throw "virtual orbit helper must be isolated to FORMATION_CIRCLE_SHOW"
+}
+if ($follower -notmatch "circle_assigned_goal") {
+  throw "map follower must guard the assigned-goal handling specifically for CIRCLE_SHOW"
+}
+if ($follower -notmatch "control_mode_ == `"wheeltec_global`" && !circle_assigned_goal") {
+  throw "wheeltec_global anchor recompute must be skipped only for CIRCLE_SHOW assigned goals"
+}
+
+Write-Host "circle_show_isolation=PASS"

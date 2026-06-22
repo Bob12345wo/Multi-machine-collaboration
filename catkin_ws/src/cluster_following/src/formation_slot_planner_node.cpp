@@ -13,6 +13,7 @@
 #include <tf2_ros/transform_listener.h>
 
 #include "cluster_common/pose_utils.h"
+#include "cluster_following/circle_slot_orbit.h"
 #include "cluster_msgs/LeaderCmd.h"
 
 class FormationSlotPlanner {
@@ -260,14 +261,6 @@ private:
     } else if (formation == cluster_msgs::LeaderCmd::FORMATION_TRIANGLE) {
       slots.push_back({-d, -d, 0.0, Pose2D()});
       slots.push_back({-d, d, 0.0, Pose2D()});
-    } else if (formation == cluster_msgs::LeaderCmd::FORMATION_CIRCLE_SHOW) {
-      const double phase2 = 2.0943951023931953;
-      const double phase3 = 4.1887902047863905;
-      const double r = circle_show_radius_;
-      slots.push_back({-r * std::sin(phase2), r * (1.0 - std::cos(phase2)),
-                       -phase2, Pose2D()});
-      slots.push_back({-r * std::sin(phase3), r * (1.0 - std::cos(phase3)),
-                       -phase3, Pose2D()});
     } else {
       slots.push_back({-d, 0.0, 0.0, Pose2D()});
       slots.push_back({-2.0 * d, 0.0, 0.0, Pose2D()});
@@ -277,6 +270,49 @@ private:
       slot.pose = offsetToMap(leader, slot.offset_x, slot.offset_y, slot.offset_yaw);
     }
     return slots;
+  }
+
+  std::vector<Slot> buildCircleShowSlots(const Pose2D& leader,
+                                         double now_sec) {
+    if (!circle_orbit_.active()) {
+      circle_orbit_.enter(toOrbitPose(leader), circle_show_radius_,
+                          latest_leader_cmd_.leader_vyaw, now_sec);
+    }
+    circle_orbit_.update(now_sec, latest_leader_cmd_.leader_vyaw);
+    const auto orbit_slots = circle_orbit_.slots(now_sec);
+
+    std::vector<Slot> slots;
+    slots.reserve(2);
+    for (const auto& orbit_slot : orbit_slots) {
+      const double dx = orbit_slot.pose.x - leader.x;
+      const double dy = orbit_slot.pose.y - leader.y;
+      const double c = std::cos(leader.yaw);
+      const double s = std::sin(leader.yaw);
+      Slot slot;
+      slot.offset_x = dx * c + dy * s;
+      slot.offset_y = -dx * s + dy * c;
+      slot.offset_yaw = cluster_common::normalizeAngle(
+          orbit_slot.pose.yaw - leader.yaw);
+      slot.pose = fromOrbitPose(orbit_slot.pose);
+      slots.push_back(slot);
+    }
+    return slots;
+  }
+
+  static cluster_following::Pose2D toOrbitPose(const Pose2D& pose) {
+    cluster_following::Pose2D out;
+    out.x = pose.x;
+    out.y = pose.y;
+    out.yaw = pose.yaw;
+    return out;
+  }
+
+  static Pose2D fromOrbitPose(const cluster_following::Pose2D& pose) {
+    Pose2D out;
+    out.x = pose.x;
+    out.y = pose.y;
+    out.yaw = pose.yaw;
+    return out;
   }
 
   static double distance2(const Pose2D& a, const Pose2D& b) {
@@ -533,8 +569,6 @@ private:
       return;
     }
 
-    std::vector<Slot> slots = buildSlots(leader, latest_leader_cmd_.formation);
-    if (slots.size() < 2) return;
     if (latest_leader_cmd_.formation != last_formation_) {
       assignment_initialized_ = false;
       robot2_waypoint_.active = false;
@@ -542,7 +576,18 @@ private:
       yielding_robot_ = 0;
       static_candidate_since_ = ros::Time(0);
       last_formation_ = latest_leader_cmd_.formation;
+      if (latest_leader_cmd_.formation == cluster_msgs::LeaderCmd::FORMATION_CIRCLE_SHOW) {
+        circle_orbit_.enter(toOrbitPose(leader), circle_show_radius_,
+                            latest_leader_cmd_.leader_vyaw, now.toSec());
+      } else {
+        circle_orbit_.reset();
+      }
     }
+    std::vector<Slot> slots =
+        latest_leader_cmd_.formation == cluster_msgs::LeaderCmd::FORMATION_CIRCLE_SHOW
+        ? buildCircleShowSlots(leader, now.toSec())
+        : buildSlots(leader, latest_leader_cmd_.formation);
+    if (slots.size() < 2) return;
 
     const double keep_order_cost =
         distance2(robot2, slots[0].pose) + distance2(robot3, slots[1].pose);
@@ -685,6 +730,7 @@ private:
   PoseCache robot3_cache_;
   WaypointState robot2_waypoint_;
   WaypointState robot3_waypoint_;
+  cluster_following::CircleOrbitSlotPlanner circle_orbit_;
 };
 
 int main(int argc, char** argv) {

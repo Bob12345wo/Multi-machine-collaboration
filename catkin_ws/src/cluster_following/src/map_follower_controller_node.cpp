@@ -495,11 +495,13 @@ private:
       active_offset_y = -map_dx * sin_l + map_dy * cos_l;
       active_offset_yaw = cluster_common::normalizeAngle(target_yaw - leader.yaw);
     }
+    const bool circle_assigned_goal = assigned_goal_fresh &&
+        latest_leader_cmd_.formation == cluster_msgs::LeaderCmd::FORMATION_CIRCLE_SHOW;
 
     const double leader_vx = latest_leader_cmd_.leader_vx;
     const double leader_wz = latest_leader_cmd_.leader_vyaw;
 
-    if (control_mode_ == "wheeltec_global") {
+    if (control_mode_ == "wheeltec_global" && !circle_assigned_goal) {
       const double cos_a = std::cos(formation_anchor_yaw_);
       const double sin_a = std::sin(formation_anchor_yaw_);
       target_x = leader.x + active_offset_x * cos_a - active_offset_y * sin_a;
