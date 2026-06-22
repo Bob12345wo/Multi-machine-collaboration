@@ -12,6 +12,7 @@ __pycache__/
 .vscode/
 .idea/
 .claude/
+.worktrees/
 agilex_car1_src/
 agilex_car2_src/
 .DS_Store
