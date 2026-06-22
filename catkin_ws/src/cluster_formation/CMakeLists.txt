@@ -53,3 +53,12 @@ add_dependencies(leader_controller_node
   ${catkin_EXPORTED_TARGETS}
   ${${PROJECT_NAME}_EXPORTED_TARGETS}
 )
+
+if(CATKIN_ENABLE_TESTING)
+  catkin_add_gtest(circle_show_recovery_test
+    test/circle_show_recovery_test.cpp
+  )
+  if(TARGET circle_show_recovery_test)
+    target_link_libraries(circle_show_recovery_test ${catkin_LIBRARIES})
+  endif()
+endif()

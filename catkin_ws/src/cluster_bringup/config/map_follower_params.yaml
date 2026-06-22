@@ -10,7 +10,7 @@ follower_odom_frame: robot2/odom
 cmd_vel_topic: /robot2/cmd_vel
 control_mode: body_orbit
 use_leader_offsets: true
-circle_show_radius: 0.5
+circle_show_radius: 0.80
 use_assigned_goal: true
 # Slot planner publishes dynamic goals continuously. Keep a short hold window so
 # followers do not fall back to static offsets during brief Wi-Fi/TF hiccups.

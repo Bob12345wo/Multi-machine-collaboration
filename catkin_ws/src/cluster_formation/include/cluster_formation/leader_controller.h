@@ -14,6 +14,7 @@
 #include "cluster_msgs/SetMode.h"
 #include "cluster_msgs/SetFormation.h"
 #include "cluster_common/pose_utils.h"
+#include "cluster_formation/circle_show_recovery.h"
 
 namespace cluster_formation {
 
@@ -37,6 +38,7 @@ private:
   void teleopVelCallback(const geometry_msgs::Twist::ConstPtr& msg);
   void navVelCallback(const geometry_msgs::Twist::ConstPtr& msg);
   void returnHomeCallback(const std_msgs::Bool::ConstPtr& msg);
+  void circleExitCallback(const std_msgs::Bool::ConstPtr& msg);
 
   // Service callbacks
   bool setModeCallback(cluster_msgs::SetMode::Request& req,
@@ -67,6 +69,9 @@ private:
   void updateAdaptiveFormationSpeedScale();
   geometry_msgs::Twist applyAdaptiveFormationSpeed(
       const geometry_msgs::Twist& cmd) const;
+  bool followerSettled(const cluster_msgs::FollowerStatus& status,
+                       const ros::Time& receipt_time,
+                       const ros::Time& now) const;
 
   // Node handles
   ros::NodeHandle nh_;
@@ -82,6 +87,7 @@ private:
   ros::Subscriber teleop_vel_sub_;
   ros::Subscriber nav_vel_sub_;
   ros::Subscriber return_home_sub_;
+  ros::Subscriber circle_exit_sub_;
 
   // Publishers
   ros::Publisher cmd_vel_pub_;
@@ -116,6 +122,7 @@ private:
   uint8_t last_non_circle_formation_;
   FormationOffset current_offset_;
   bool circle_show_was_active_;
+  CircleShowRecovery circle_recovery_;
 
   // Safety
   bool follower_watchdog_enabled_;
@@ -147,6 +154,8 @@ private:
   std::string self_frame_;
   double circle_show_radius_;
   double circle_show_angular_speed_;
+  double circle_exit_settle_error_;
+  double circle_exit_settle_dwell_;
   double cmd_filter_alpha_;
   double cmd_slew_linear_;
   double cmd_slew_angular_;

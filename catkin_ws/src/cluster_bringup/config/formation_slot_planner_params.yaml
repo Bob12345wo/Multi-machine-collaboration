@@ -17,7 +17,7 @@ robot3_goal_topic: /robot3/assigned_goal
 loop_rate: 10
 leader_cmd_timeout: 1.0
 formation_spacing: 0.8
-circle_show_radius: 0.5
+circle_show_radius: 0.80
 assignment_switch_margin: 0.25
 # Keep adaptive slot assignment, but reject swaps that would make robot2 and
 # robot3 cross through each other during formation switches.

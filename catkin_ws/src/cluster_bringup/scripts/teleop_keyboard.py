@@ -16,6 +16,7 @@ Keys:
   2      : LINE formation
   3      : CIRCLE_SHOW formation
   4      : TRIANGLE formation
+  e      : safely exit CIRCLE_SHOW and restore the prior formation
   5      : switch follower control mode
   6      : toggle avoidance filter
   0      : return car1 to startup home pose
@@ -49,6 +50,8 @@ class TeleopKeyboard:
             '/robot2/avoidance_enabled', Bool, queue_size=1, latch=True)
         self.return_home_pub = rospy.Publisher(
             '/robot1/return_home', Bool, queue_size=1)
+        self.circle_exit_pub = rospy.Publisher(
+            '/robot1/circle_exit', Bool, queue_size=1)
 
         # Service clients
         rospy.wait_for_service('/robot1/set_mode', timeout=10.0)
@@ -98,6 +101,7 @@ class TeleopKeyboard:
         print("    2    : LINE")
         print("    3    : CIRCLE_SHOW")
         print("    4    : TRIANGLE")
+        print("    e    : safely exit CIRCLE_SHOW and restore prior formation")
         print("    5    : switch follower mode (body_orbit / wheeltec_global)")
         print("    6    : toggle avoidance filter")
         print("    0    : return car1 to startup home pose")
@@ -252,6 +256,13 @@ class TeleopKeyboard:
                     if self.service_key_ready(key):
                         rospy.loginfo("Request Formation: TRIANGLE")
                         self.switch_formation(3)
+                elif key == 'e':
+                    if self.service_key_ready(key):
+                        self.vx = 0.0
+                        self.vz = 0.0
+                        self.last_motion_key_time = rospy.Time(0)
+                        self.circle_exit_pub.publish(Bool(data=True))
+                        rospy.loginfo("Request CIRCLE_SHOW safe exit")
                 elif key == '5':
                     if self.service_key_ready(key):
                         self.switch_follower_control_mode()

@@ -43,6 +43,9 @@ return_home_max_linear_speed: 0.30
 return_home_max_angular_speed: 0.50
 
 # Key 3 circle-show formation. car1 drives a slow circle and followers take
-# 120-degree phase positions on the same circle.
-circle_show_radius: 0.5
+# 120-degree phase positions on the same circle.  Key e stops car1 and
+# safely restores the ordinary formation that was active before circle-show.
+circle_show_radius: 0.80
 circle_show_angular_speed: 0.16
+circle_exit_settle_error: 0.12
+circle_exit_settle_dwell: 1.0

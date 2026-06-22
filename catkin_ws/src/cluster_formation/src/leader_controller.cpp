@@ -44,6 +44,8 @@ LeaderController::LeaderController(const ros::NodeHandle& nh, const ros::NodeHan
   pnh_.param<std::string>("self_frame", self_frame_, "robot1/base_link");
   pnh_.param("circle_show_radius", circle_show_radius_, 0.5);
   pnh_.param("circle_show_angular_speed", circle_show_angular_speed_, 0.32);
+  pnh_.param("circle_exit_settle_error", circle_exit_settle_error_, 0.12);
+  pnh_.param("circle_exit_settle_dwell", circle_exit_settle_dwell_, 1.0);
   pnh_.param("cmd_filter_alpha", cmd_filter_alpha_, 0.75);
   pnh_.param("cmd_slew_linear", cmd_slew_linear_, 0.8);
   pnh_.param("cmd_slew_angular", cmd_slew_angular_, 1.6);
@@ -89,6 +91,8 @@ LeaderController::LeaderController(const ros::NodeHandle& nh, const ros::NodeHan
       &LeaderController::navVelCallback, this);
   return_home_sub_ = nh_.subscribe("/robot1/return_home", 1,
       &LeaderController::returnHomeCallback, this);
+  circle_exit_sub_ = nh_.subscribe("/robot1/circle_exit", 1,
+      &LeaderController::circleExitCallback, this);
 
   // Publishers
   cmd_vel_pub_ = nh_.advertise<geometry_msgs::Twist>("/robot1/cmd_vel", 1);
@@ -253,25 +257,11 @@ void LeaderController::teleopVelCallback(const geometry_msgs::Twist::ConstPtr& m
   teleop_cmd_received_ = true;
   last_teleop_cmd_time_ = ros::Time::now();
 
-  const bool nonzero_manual_cmd =
-      std::fabs(msg->linear.x) > 0.01 || std::fabs(msg->angular.z) > 0.01;
-
-  const bool circle_show_active =
-      current_mode_ == cluster_msgs::LeaderCmd::MODE_FORMATION &&
-      current_formation_ == cluster_msgs::LeaderCmd::FORMATION_CIRCLE_SHOW &&
-      !use_custom_offsets_;
-
-  if (circle_show_active && nonzero_manual_cmd) {
-    ROS_INFO("Manual command received in CIRCLE_SHOW; returning to formation %u",
-             last_non_circle_formation_);
-    current_formation_ = last_non_circle_formation_;
-    circle_show_was_active_ = true;
+  if (circle_recovery_.phase() != CircleShowPhase::NORMAL) {
+    return;
   }
 
-  // Do not let the keyboard's continuous zero-speed stream overwrite
-  // autonomous leader commands such as circle-show and return-home.
-  if (!return_home_active_ && !(circle_show_active && !nonzero_manual_cmd) &&
-      current_mode_ != cluster_msgs::LeaderCmd::MODE_IDLE) {
+  if (!return_home_active_ && current_mode_ != cluster_msgs::LeaderCmd::MODE_IDLE) {
     publishCmdVel(applyAdaptiveFormationSpeed(*msg), false, false);
   }
 }
@@ -281,15 +271,8 @@ void LeaderController::navVelCallback(const geometry_msgs::Twist::ConstPtr& msg)
   teleop_cmd_received_ = true;
   last_teleop_cmd_time_ = ros::Time::now();
 
-  const bool nonzero_nav_cmd =
-      std::fabs(msg->linear.x) > 0.01 || std::fabs(msg->angular.z) > 0.01;
-  const bool circle_show_active =
-      current_mode_ == cluster_msgs::LeaderCmd::MODE_FORMATION &&
-      current_formation_ == cluster_msgs::LeaderCmd::FORMATION_CIRCLE_SHOW &&
-      !use_custom_offsets_;
-  if (circle_show_active && nonzero_nav_cmd) {
-    current_formation_ = last_non_circle_formation_;
-    circle_show_was_active_ = true;
+  if (circle_recovery_.phase() != CircleShowPhase::NORMAL) {
+    return;
   }
 
   if (!return_home_active_ &&
@@ -335,6 +318,30 @@ void LeaderController::returnHomeCallback(const std_msgs::Bool::ConstPtr& msg) {
            std::sqrt(dx * dx + dy * dy));
   return_home_active_ = true;
   current_mode_ = cluster_msgs::LeaderCmd::MODE_TELEOP;
+  circle_recovery_.abort();
+}
+
+void LeaderController::circleExitCallback(const std_msgs::Bool::ConstPtr& msg) {
+  if (!msg->data) return;
+  if (circle_recovery_.requestExit()) {
+    ROS_INFO("CIRCLE_SHOW exit requested; recovering formation %u",
+             circle_recovery_.recoveryFormation());
+  }
+}
+
+bool LeaderController::followerSettled(
+    const cluster_msgs::FollowerStatus& status,
+    const ros::Time& receipt_time, const ros::Time& now) const {
+  if (receipt_time.isZero() ||
+      (now - receipt_time).toSec() > formation_status_timeout_ ||
+      !std::isfinite(status.error_dist)) {
+    return false;
+  }
+  if (status.state == cluster_msgs::FollowerStatus::STATE_LOST ||
+      status.state == cluster_msgs::FollowerStatus::STATE_EMERGENCY) {
+    return false;
+  }
+  return std::fabs(status.error_dist) <= circle_exit_settle_error_;
 }
 
 // ---------- Service Callbacks ----------
@@ -350,6 +357,16 @@ bool LeaderController::setModeCallback(
   }
 
   ROS_INFO("SetMode: %d -> %d", current_mode_, req.mode);
+  if (req.mode != cluster_msgs::LeaderCmd::MODE_FORMATION) {
+    circle_recovery_.abort();
+  }
+
+  if (req.mode == cluster_msgs::LeaderCmd::MODE_FORMATION &&
+      circle_recovery_.phase() != CircleShowPhase::NORMAL) {
+    res.success = false;
+    res.message = "CIRCLE_SHOW is active or recovering; use circle_exit first";
+    return true;
+  }
   current_mode_ = req.mode;
 
   if (req.mode == cluster_msgs::LeaderCmd::MODE_FORMATION) {
@@ -368,6 +385,10 @@ bool LeaderController::setModeCallback(
     } else {
       use_custom_offsets_ = false;
     }
+    if (current_formation_ == cluster_msgs::LeaderCmd::FORMATION_CIRCLE_SHOW &&
+        !use_custom_offsets_) {
+      circle_recovery_.enter(last_non_circle_formation_);
+    }
   }
 
   res.success = true;
@@ -385,12 +406,21 @@ bool LeaderController::setFormationCallback(
     return true;
   }
 
+  if (circle_recovery_.phase() != CircleShowPhase::NORMAL) {
+    res.success = false;
+    res.message = "CIRCLE_SHOW is active or recovering; use circle_exit first";
+    return true;
+  }
+
   current_formation_ = req.formation;
   if (current_formation_ != cluster_msgs::LeaderCmd::FORMATION_CIRCLE_SHOW) {
     last_non_circle_formation_ = current_formation_;
   }
   current_mode_ = cluster_msgs::LeaderCmd::MODE_FORMATION;
   use_custom_offsets_ = false;
+  if (current_formation_ == cluster_msgs::LeaderCmd::FORMATION_CIRCLE_SHOW) {
+    circle_recovery_.enter(last_non_circle_formation_);
+  }
   ROS_INFO("SetFormation: %d, forcing FORMATION mode", current_formation_);
 
   res.success = true;
@@ -403,6 +433,10 @@ bool LeaderController::setFormationCallback(
 void LeaderController::controlLoop(const ros::TimerEvent& event) {
   checkSafety();
   updateAdaptiveFormationSpeedScale();
+
+  if (current_mode_ != cluster_msgs::LeaderCmd::MODE_FORMATION) {
+    circle_recovery_.abort();
+  }
 
   if (return_home_active_) {
     computeReturnHome();
@@ -544,10 +578,31 @@ void LeaderController::computeFormationTarget() {
     return;
   }
 
+  const bool recovering =
+      circle_recovery_.phase() == CircleShowPhase::RECOVERING;
+  if (recovering) {
+    current_formation_ = circle_recovery_.recoveryFormation();
+    use_custom_offsets_ = false;
+    geometry_msgs::Twist stop;
+    publishCmdVel(stop, true, false);
+    circle_show_was_active_ = false;
+    const ros::Time now = ros::Time::now();
+    const bool robot2_settled = followerSettled(
+        latest_follower_status_, last_follower_status_time_, now);
+    const bool robot3_settled = followerSettled(
+        latest_follower3_status_, last_follower3_status_time_, now);
+    if (circle_recovery_.updateRecovery(robot2_settled, robot3_settled,
+                                        now.toSec(), circle_exit_settle_dwell_)) {
+      ROS_INFO("CIRCLE_SHOW recovery complete in formation %u",
+               current_formation_);
+    }
+  }
+
   auto leader_pose = cluster_common::odomToPose2D(latest_self_odom_);
   const bool circle_show =
       current_formation_ == cluster_msgs::LeaderCmd::FORMATION_CIRCLE_SHOW &&
-      !use_custom_offsets_;
+      !use_custom_offsets_ &&
+      circle_recovery_.phase() == CircleShowPhase::ACTIVE;
   geometry_msgs::Twist show_cmd;
   if (circle_show) {
     show_cmd.linear.x = cluster_common::clamp(
@@ -556,7 +611,12 @@ void LeaderController::computeFormationTarget() {
     show_cmd.angular.z = cluster_common::clamp(
         circle_show_angular_speed_,
         -max_angular_speed_, max_angular_speed_);
-    show_cmd = applyAdaptiveFormationSpeed(show_cmd);
+    const double circle_scale = adaptive_formation_speed_enabled_
+        ? adaptive_formation_speed_scale_ : 1.0;
+    const CircleCommand scaled = CircleShowRecovery::scaleCircleCommand(
+        {show_cmd.linear.x, show_cmd.angular.z}, circle_scale);
+    show_cmd.linear.x = scaled.linear_x;
+    show_cmd.angular.z = scaled.angular_z;
     publishCmdVel(show_cmd);
     circle_show_was_active_ = true;
   } else if (circle_show_was_active_) {
