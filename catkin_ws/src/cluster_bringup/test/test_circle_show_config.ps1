@@ -16,7 +16,9 @@ $formation = Get-Content -Raw (Join-Path $root 'config\formation_params.yaml')
 foreach ($param in @(
     'circle_start_settle_error',
     'circle_start_settle_dwell',
+    'circle_start_max_wait',
     'circle_pause_error',
+    'circle_slow_scale',
     'circle_exit_settle_error',
     'circle_exit_settle_dwell')) {
   if ($formation -notmatch "(?m)^$($param):\s*[0-9.]+\s*$") {

@@ -23,6 +23,11 @@ int main() {
   assert(state.phase() == cluster_formation::CircleShowPhase::NORMAL);
   assert(state.recoveryFormation() == 3U);
 
+  assert(state.enter(3U, 10.0));
+  assert(!state.updateStart(false, false, 12.0, 0.5, 3.0));
+  assert(state.updateStart(false, false, 13.0, 0.5, 3.0));
+  assert(state.phase() == cluster_formation::CircleShowPhase::ACTIVE);
+
   state.abort();
   assert(!state.updateRecovery(true, true, 10.0, 1.0));
 

@@ -21,19 +21,30 @@ class CircleShowRecovery {
   }
 
   bool enter(uint8_t recovery_formation) {
+    return enter(recovery_formation, 0.0);
+  }
+
+  bool enter(uint8_t recovery_formation, double now_sec) {
     if (phase_ != CircleShowPhase::NORMAL) {
       return false;
     }
     recovery_formation_ = recovery_formation;
     phase_ = CircleShowPhase::PREPARING;
     settled_since_ = -1.0;
+    enter_time_ = now_sec;
     return true;
   }
 
   bool updateStart(bool robot2_settled, bool robot3_settled,
-                   double now_sec, double dwell_sec) {
+                   double now_sec, double dwell_sec,
+                   double max_wait_sec = 0.0) {
     if (phase_ != CircleShowPhase::PREPARING) {
       return false;
+    }
+    if (max_wait_sec > 0.0 && now_sec - enter_time_ >= max_wait_sec) {
+      phase_ = CircleShowPhase::ACTIVE;
+      settled_since_ = -1.0;
+      return true;
     }
     if (!robot2_settled || !robot3_settled) {
       settled_since_ = -1.0;
@@ -90,6 +101,7 @@ class CircleShowRecovery {
   void abort() {
     phase_ = CircleShowPhase::NORMAL;
     settled_since_ = -1.0;
+    enter_time_ = 0.0;
   }
 
   CircleShowPhase phase() const { return phase_; }
@@ -99,6 +111,7 @@ class CircleShowRecovery {
   CircleShowPhase phase_{CircleShowPhase::NORMAL};
   uint8_t recovery_formation_{0};
   double settled_since_{-1.0};
+  double enter_time_{0.0};
 };
 
 }  // namespace cluster_formation

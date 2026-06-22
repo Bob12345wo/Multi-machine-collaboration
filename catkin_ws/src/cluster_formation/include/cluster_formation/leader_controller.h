@@ -157,7 +157,9 @@ private:
   double circle_show_angular_speed_;
   double circle_start_settle_error_;
   double circle_start_settle_dwell_;
+  double circle_start_max_wait_;
   double circle_pause_error_;
+  double circle_slow_scale_;
   double circle_exit_settle_error_;
   double circle_exit_settle_dwell_;
   double cmd_filter_alpha_;

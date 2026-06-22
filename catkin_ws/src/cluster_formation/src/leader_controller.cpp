@@ -46,7 +46,9 @@ LeaderController::LeaderController(const ros::NodeHandle& nh, const ros::NodeHan
   pnh_.param("circle_show_angular_speed", circle_show_angular_speed_, 0.32);
   pnh_.param("circle_start_settle_error", circle_start_settle_error_, 0.16);
   pnh_.param("circle_start_settle_dwell", circle_start_settle_dwell_, 0.6);
+  pnh_.param("circle_start_max_wait", circle_start_max_wait_, 3.0);
   pnh_.param("circle_pause_error", circle_pause_error_, 0.30);
+  pnh_.param("circle_slow_scale", circle_slow_scale_, 0.25);
   pnh_.param("circle_exit_settle_error", circle_exit_settle_error_, 0.12);
   pnh_.param("circle_exit_settle_dwell", circle_exit_settle_dwell_, 1.0);
   pnh_.param("cmd_filter_alpha", cmd_filter_alpha_, 0.75);
@@ -396,7 +398,7 @@ bool LeaderController::setModeCallback(
     }
     if (current_formation_ == cluster_msgs::LeaderCmd::FORMATION_CIRCLE_SHOW &&
         !use_custom_offsets_) {
-      circle_recovery_.enter(last_non_circle_formation_);
+      circle_recovery_.enter(last_non_circle_formation_, ros::Time::now().toSec());
     }
   }
 
@@ -428,7 +430,7 @@ bool LeaderController::setFormationCallback(
   current_mode_ = cluster_msgs::LeaderCmd::MODE_FORMATION;
   use_custom_offsets_ = false;
   if (current_formation_ == cluster_msgs::LeaderCmd::FORMATION_CIRCLE_SHOW) {
-    circle_recovery_.enter(last_non_circle_formation_);
+    circle_recovery_.enter(last_non_circle_formation_, ros::Time::now().toSec());
   }
   ROS_INFO("SetFormation: %d, forcing FORMATION mode", current_formation_);
 
@@ -625,7 +627,8 @@ void LeaderController::computeFormationTarget() {
         latest_follower3_status_, last_follower3_status_time_, now,
         circle_start_settle_error_);
     if (circle_recovery_.updateStart(robot2_settled, robot3_settled,
-                                     now.toSec(), circle_start_settle_dwell_)) {
+                                     now.toSec(), circle_start_settle_dwell_,
+                                     circle_start_max_wait_)) {
       ROS_INFO("CIRCLE_SHOW synchronized start");
     }
   }
@@ -647,10 +650,11 @@ void LeaderController::computeFormationTarget() {
         ? adaptive_formation_speed_scale_ : 1.0;
     if (formation_status_fresh_ &&
         latest_formation_max_error_ > circle_pause_error_) {
-      circle_scale = 0.0;
+      circle_scale = std::min(circle_scale,
+          cluster_common::clamp(circle_slow_scale_, 0.05, 1.0));
       ROS_WARN_THROTTLE(1.0,
-          "CIRCLE_SHOW paused: follower error %.2fm exceeds %.2fm",
-          latest_formation_max_error_, circle_pause_error_);
+          "CIRCLE_SHOW slow sync: follower error %.2fm exceeds %.2fm, scale=%.2f",
+          latest_formation_max_error_, circle_pause_error_, circle_scale);
     }
     const CircleCommand scaled = CircleShowRecovery::scaleCircleCommand(
         {show_cmd.linear.x, show_cmd.angular.z}, circle_scale);

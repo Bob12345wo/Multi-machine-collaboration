@@ -44,3 +44,11 @@ TEST(CircleShowRecovery, resetsDwellWhenEitherFollowerLosesSettlement) {
   EXPECT_FALSE(state.updateRecovery(true, true, 0.7, 1.0));
   EXPECT_TRUE(state.updateRecovery(true, true, 1.7, 1.0));
 }
+
+TEST(CircleShowRecovery, startsAfterMaxWaitEvenIfFollowersAreNotSettled) {
+  cluster_formation::CircleShowRecovery state;
+  ASSERT_TRUE(state.enter(0U, 10.0));
+  EXPECT_FALSE(state.updateStart(false, false, 12.0, 1.0, 3.0));
+  EXPECT_TRUE(state.updateStart(false, false, 13.0, 1.0, 3.0));
+  EXPECT_EQ(state.phase(), cluster_formation::CircleShowPhase::ACTIVE);
+}

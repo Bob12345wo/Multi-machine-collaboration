@@ -579,8 +579,10 @@ private:
       if (latest_leader_cmd_.formation == cluster_msgs::LeaderCmd::FORMATION_CIRCLE_SHOW) {
         circle_orbit_.enter(toOrbitPose(leader), circle_show_radius_,
                             latest_leader_cmd_.leader_vyaw, now.toSec());
+        circle_show_started_ = false;
       } else {
         circle_orbit_.reset();
+        circle_show_started_ = false;
       }
     }
     std::vector<Slot> slots =
@@ -597,9 +599,11 @@ private:
     const bool swap_safe = assignmentSafe(robot2, robot3, slots[1], slots[0]);
     const bool circle_show =
         latest_leader_cmd_.formation == cluster_msgs::LeaderCmd::FORMATION_CIRCLE_SHOW;
-    const bool circle_show_preparing = circle_show &&
-        std::fabs(latest_leader_cmd_.leader_vx) < waypoint_leader_static_v_threshold_ &&
-        std::fabs(latest_leader_cmd_.leader_vyaw) < waypoint_leader_static_w_threshold_;
+    if (circle_show &&
+        std::fabs(latest_leader_cmd_.leader_vyaw) >= waypoint_leader_static_w_threshold_) {
+      circle_show_started_ = true;
+    }
+    const bool circle_show_preparing = circle_show && !circle_show_started_;
     bool swap = false;
     if (lock_robot_slots_) {
       assignment_initialized_ = true;
@@ -740,6 +744,7 @@ private:
   WaypointState robot2_waypoint_;
   WaypointState robot3_waypoint_;
   cluster_following::CircleOrbitSlotPlanner circle_orbit_;
+  bool circle_show_started_{false};
 };
 
 int main(int argc, char** argv) {

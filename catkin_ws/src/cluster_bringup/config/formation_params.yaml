@@ -49,6 +49,8 @@ circle_show_radius: 0.80
 circle_show_angular_speed: 0.16
 circle_start_settle_error: 0.16
 circle_start_settle_dwell: 0.6
+circle_start_max_wait: 3.0
 circle_pause_error: 0.30
+circle_slow_scale: 0.25
 circle_exit_settle_error: 0.12
 circle_exit_settle_dwell: 1.0
