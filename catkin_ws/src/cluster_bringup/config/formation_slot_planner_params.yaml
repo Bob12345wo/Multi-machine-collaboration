@@ -11,12 +11,27 @@ leader_odom_frame: robot1/odom
 robot2_odom_frame: robot2/odom
 robot3_odom_frame: robot3/odom
 leader_cmd_topic: /robot1/leader_cmd
+leader_assist_goal_topic: /robot1/formation_assist_goal
 robot2_goal_topic: /robot2/assigned_goal
 robot3_goal_topic: /robot3/assigned_goal
 
 loop_rate: 10
 leader_cmd_timeout: 1.0
 formation_spacing: 0.8
+
+# During ordinary formation changes, publish one frozen car1 goal based on the
+# current three-robot centroid. This lets car1, car2, and car3 move toward the
+# new formation center together. CIRCLE_SHOW and web navigation do not use it.
+leader_assist_enabled: true
+leader_assist_transition_timeout: 5.0
+leader_assist_goal_tolerance: 0.12
+leader_assist_yaw_tolerance: 0.20
+# car1 should help the transition, but it should not become the main moving
+# robot. Use part of the mathematically shared center and cap the one-shot
+# displacement so followers still do most slot convergence.
+leader_assist_participation: 0.45
+leader_assist_max_shift: 0.25
+
 circle_show_radius: 0.80
 # Key 3 starts from the current triangle layout, then locks each follower's
 # current orbit phase. This avoids car2 cutting through car3 when switching

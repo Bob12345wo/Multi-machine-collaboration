@@ -42,6 +42,18 @@ return_home_k_w: 0.65
 return_home_max_linear_speed: 0.30
 return_home_max_angular_speed: 0.50
 
+# Normal formation switching assist. During COLUMN/LINE/TRIANGLE transitions,
+# the slot planner publishes a short-lived map goal for car1 so all three cars
+# converge toward the new formation center instead of keeping car1 fixed.
+formation_assist_enabled: true
+formation_assist_goal_timeout: 0.45
+formation_assist_pos_tolerance: 0.08
+formation_assist_yaw_tolerance: 0.18
+formation_assist_k_v: 0.80
+formation_assist_k_w: 0.85
+formation_assist_max_linear_speed: 0.24
+formation_assist_max_angular_speed: 0.45
+
 # Key 3 circle-show formation. car1 drives a slow circle and followers take
 # 120-degree phase positions on the same circle.  Key e stops car1 and
 # safely restores the ordinary formation that was active before circle-show.

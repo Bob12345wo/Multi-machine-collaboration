@@ -2,6 +2,7 @@
 #define CLUSTER_FORMATION_LEADER_CONTROLLER_H
 
 #include <ros/ros.h>
+#include <geometry_msgs/PoseStamped.h>
 #include <geometry_msgs/Twist.h>
 #include <nav_msgs/Odometry.h>
 #include <std_msgs/Bool.h>
@@ -37,6 +38,8 @@ private:
   void follower3StatusCallback(const cluster_msgs::FollowerStatus::ConstPtr& msg);
   void teleopVelCallback(const geometry_msgs::Twist::ConstPtr& msg);
   void navVelCallback(const geometry_msgs::Twist::ConstPtr& msg);
+  void formationAssistGoalCallback(
+      const geometry_msgs::PoseStamped::ConstPtr& msg);
   void returnHomeCallback(const std_msgs::Bool::ConstPtr& msg);
   void circleExitCallback(const std_msgs::Bool::ConstPtr& msg);
 
@@ -53,6 +56,7 @@ private:
   void computeFormationTarget();
   void computeFollowTarget();
   void computeReturnHome();
+  bool computeFormationAssist(geometry_msgs::Twist& cmd);
   void checkSafety();
   void publishLeaderCmd();
   geometry_msgs::Pose computeTargetPose(const cluster_common::Pose2D& leader_pose,
@@ -87,6 +91,7 @@ private:
   ros::Subscriber follower3_status_sub_;
   ros::Subscriber teleop_vel_sub_;
   ros::Subscriber nav_vel_sub_;
+  ros::Subscriber formation_assist_goal_sub_;
   ros::Subscriber return_home_sub_;
   ros::Subscriber circle_exit_sub_;
 
@@ -107,12 +112,14 @@ private:
   cluster_msgs::FollowerStatus latest_follower_status_;
   cluster_msgs::FollowerStatus latest_follower3_status_;
   geometry_msgs::Twist latest_teleop_cmd_;
+  geometry_msgs::PoseStamped latest_formation_assist_goal_;
   geometry_msgs::Twist last_cmd_vel_;
   bool self_odom_received_;
   bool follower_odom_received_;
   bool follower_status_received_;
   bool follower3_status_received_;
   bool teleop_cmd_received_;
+  bool formation_assist_goal_received_;
   bool home_pose_received_;
   bool return_home_active_;
   cluster_common::Pose2D home_pose_;
@@ -137,6 +144,7 @@ private:
   ros::Time last_follower_status_time_;
   ros::Time last_follower3_status_time_;
   ros::Time last_teleop_cmd_time_;
+  ros::Time last_formation_assist_goal_time_;
   ros::Time last_cmd_vel_time_;
 
   // Parameters
@@ -151,6 +159,14 @@ private:
   double return_home_max_linear_speed_;
   double return_home_max_angular_speed_;
   bool return_home_use_map_;
+  bool formation_assist_enabled_;
+  double formation_assist_goal_timeout_;
+  double formation_assist_pos_tolerance_;
+  double formation_assist_yaw_tolerance_;
+  double formation_assist_k_v_;
+  double formation_assist_k_w_;
+  double formation_assist_max_linear_speed_;
+  double formation_assist_max_angular_speed_;
   std::string map_frame_;
   std::string self_frame_;
   double circle_show_radius_;

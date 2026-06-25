@@ -26,6 +26,9 @@ public:
     pnh_.param<std::string>("robot2_odom_frame", robot2_odom_frame_, "robot2/odom");
     pnh_.param<std::string>("robot3_odom_frame", robot3_odom_frame_, "robot3/odom");
     pnh_.param<std::string>("leader_cmd_topic", leader_cmd_topic_, "/robot1/leader_cmd");
+    pnh_.param<std::string>("leader_assist_goal_topic",
+                            leader_assist_goal_topic_,
+                            "/robot1/formation_assist_goal");
     pnh_.param<std::string>("robot2_goal_topic", robot2_goal_topic_, "/robot2/assigned_goal");
     pnh_.param<std::string>("robot3_goal_topic", robot3_goal_topic_, "/robot3/assigned_goal");
     pnh_.param("enabled", enabled_, true);
@@ -69,16 +72,30 @@ public:
     pnh_.param("enable_odom_prediction", enable_odom_prediction_, true);
     pnh_.param("prediction_max_age", prediction_max_age_, 6.0);
     pnh_.param("prediction_odom_max_age", prediction_odom_max_age_, 1.0);
+    pnh_.param("leader_assist_enabled", leader_assist_enabled_, true);
+    pnh_.param("leader_assist_transition_timeout",
+               leader_assist_transition_timeout_, 5.0);
+    pnh_.param("leader_assist_goal_tolerance",
+               leader_assist_goal_tolerance_, 0.12);
+    pnh_.param("leader_assist_yaw_tolerance",
+               leader_assist_yaw_tolerance_, 0.20);
+    pnh_.param("leader_assist_participation",
+               leader_assist_participation_, 0.45);
+    pnh_.param("leader_assist_max_shift",
+               leader_assist_max_shift_, 0.25);
 
     leader_cmd_sub_ = nh_.subscribe(leader_cmd_topic_, 1,
                                     &FormationSlotPlanner::leaderCmdCallback, this);
+    leader_assist_goal_pub_ =
+        nh_.advertise<geometry_msgs::PoseStamped>(leader_assist_goal_topic_, 1);
     robot2_goal_pub_ = nh_.advertise<geometry_msgs::PoseStamped>(robot2_goal_topic_, 1);
     robot3_goal_pub_ = nh_.advertise<geometry_msgs::PoseStamped>(robot3_goal_topic_, 1);
     timer_ = nh_.createTimer(ros::Duration(1.0 / loop_rate_),
                              &FormationSlotPlanner::controlLoop, this);
 
-    ROS_INFO("FormationSlotPlanner: %s -> %s, %s",
-             leader_cmd_topic_.c_str(), robot2_goal_topic_.c_str(),
+    ROS_INFO("FormationSlotPlanner: %s -> %s, %s, %s",
+             leader_cmd_topic_.c_str(), leader_assist_goal_topic_.c_str(),
+             robot2_goal_topic_.c_str(),
              robot3_goal_topic_.c_str());
   }
 
@@ -119,6 +136,15 @@ private:
     Pose2D map_pose{0.0, 0.0, 0.0};
     Pose2D odom_pose{0.0, 0.0, 0.0};
     ros::Time stamp;
+  };
+
+  struct AssistTransition {
+    bool active{false};
+    uint8_t formation{255};
+    ros::Time start_time;
+    Pose2D leader_goal{0.0, 0.0, 0.0};
+    Pose2D robot2_goal{0.0, 0.0, 0.0};
+    Pose2D robot3_goal{0.0, 0.0, 0.0};
   };
 
   void leaderCmdCallback(const cluster_msgs::LeaderCmd::ConstPtr& msg) {
@@ -281,6 +307,94 @@ private:
       slot.pose = offsetToMap(leader, slot.offset_x, slot.offset_y, slot.offset_yaw);
     }
     return slots;
+  }
+
+  Pose2D computeSharedLeaderGoal(const Pose2D& leader,
+                                 const Pose2D& robot2,
+                                 const Pose2D& robot3,
+                                 const Slot& robot2_slot,
+                                 const Slot& robot3_slot) const {
+    const double centroid_x = (leader.x + robot2.x + robot3.x) / 3.0;
+    const double centroid_y = (leader.y + robot2.y + robot3.y) / 3.0;
+    const double mean_offset_x =
+        (robot2_slot.offset_x + robot3_slot.offset_x) / 3.0;
+    const double mean_offset_y =
+        (robot2_slot.offset_y + robot3_slot.offset_y) / 3.0;
+    const double c = std::cos(leader.yaw);
+    const double s = std::sin(leader.yaw);
+
+    Pose2D goal;
+    const double shared_x = centroid_x - (mean_offset_x * c - mean_offset_y * s);
+    const double shared_y = centroid_y - (mean_offset_x * s + mean_offset_y * c);
+    const double participation =
+        cluster_common::clamp(leader_assist_participation_, 0.0, 1.0);
+    double dx = (shared_x - leader.x) * participation;
+    double dy = (shared_y - leader.y) * participation;
+    const double shift = std::hypot(dx, dy);
+    if (leader_assist_max_shift_ > 0.0 && shift > leader_assist_max_shift_) {
+      const double scale = leader_assist_max_shift_ / shift;
+      dx *= scale;
+      dy *= scale;
+    }
+    goal.x = leader.x + dx;
+    goal.y = leader.y + dy;
+    goal.yaw = leader.yaw;
+    return goal;
+  }
+
+  void startLeaderAssistTransition(const Pose2D& leader,
+                                   const Pose2D& robot2,
+                                   const Pose2D& robot3,
+                                   const Slot& robot2_slot,
+                                   const Slot& robot3_slot,
+                                   const ros::Time& now) {
+    leader_assist_.active = true;
+    leader_assist_.formation = latest_leader_cmd_.formation;
+    leader_assist_.start_time = now;
+    leader_assist_.leader_goal = computeSharedLeaderGoal(
+        leader, robot2, robot3, robot2_slot, robot3_slot);
+    leader_assist_.robot2_goal = offsetToMap(
+        leader_assist_.leader_goal, robot2_slot.offset_x,
+        robot2_slot.offset_y, robot2_slot.offset_yaw);
+    leader_assist_.robot3_goal = offsetToMap(
+        leader_assist_.leader_goal, robot3_slot.offset_x,
+        robot3_slot.offset_y, robot3_slot.offset_yaw);
+    ROS_INFO("Leader assist transition: center formation=%u leader=(%.2f,%.2f) "
+             "r2=(%.2f,%.2f) r3=(%.2f,%.2f) assist_shift=%.2fm",
+             leader_assist_.formation,
+             leader_assist_.leader_goal.x, leader_assist_.leader_goal.y,
+             leader_assist_.robot2_goal.x, leader_assist_.robot2_goal.y,
+             leader_assist_.robot3_goal.x, leader_assist_.robot3_goal.y,
+             std::hypot(leader_assist_.leader_goal.x - leader.x,
+                        leader_assist_.leader_goal.y - leader.y));
+  }
+
+  bool leaderAssistSettled(const Pose2D& leader,
+                           const Pose2D& robot2,
+                           const Pose2D& robot3,
+                           const ros::Time& now) const {
+    if (!leader_assist_.active) {
+      return true;
+    }
+    if ((now - leader_assist_.start_time).toSec() >
+        leader_assist_transition_timeout_) {
+      return true;
+    }
+    const double leader_dist = std::hypot(
+        leader_assist_.leader_goal.x - leader.x,
+        leader_assist_.leader_goal.y - leader.y);
+    const double leader_yaw = std::fabs(cluster_common::normalizeAngle(
+        leader_assist_.leader_goal.yaw - leader.yaw));
+    const double robot2_dist = std::hypot(
+        leader_assist_.robot2_goal.x - robot2.x,
+        leader_assist_.robot2_goal.y - robot2.y);
+    const double robot3_dist = std::hypot(
+        leader_assist_.robot3_goal.x - robot3.x,
+        leader_assist_.robot3_goal.y - robot3.y);
+    return leader_dist <= leader_assist_goal_tolerance_ &&
+           leader_yaw <= leader_assist_yaw_tolerance_ &&
+           robot2_dist <= waypoint_goal_tolerance_ &&
+           robot3_dist <= waypoint_goal_tolerance_;
   }
 
   Pose2D circleCenterFromLeader(const Pose2D& leader) const {
@@ -736,6 +850,7 @@ private:
       circle_robot2_goal_initialized_ = false;
       circle_robot3_goal_initialized_ = false;
       circle_phase_last_time_ = ros::Time(0);
+      leader_assist_.active = false;
       return;
     }
 
@@ -746,6 +861,7 @@ private:
       robot3_waypoint_.active = false;
       yielding_robot_ = 0;
       static_candidate_since_ = ros::Time(0);
+      leader_assist_.active = false;
     }
 
     Pose2D leader;
@@ -757,12 +873,15 @@ private:
       return;
     }
 
-    if (latest_leader_cmd_.formation != last_formation_) {
+    const bool formation_changed =
+        latest_leader_cmd_.formation != last_formation_;
+    if (formation_changed) {
       assignment_initialized_ = false;
       robot2_waypoint_.active = false;
       robot3_waypoint_.active = false;
       yielding_robot_ = 0;
       static_candidate_since_ = ros::Time(0);
+      leader_assist_.active = false;
       last_formation_ = latest_leader_cmd_.formation;
       circle_show_started_ = false;
       circle_show_started_time_ = ros::Time(0);
@@ -825,8 +944,22 @@ private:
     }
     last_swap_assignment_ = swap;
 
-    const Slot& robot2_slot = swap ? slots[1] : slots[0];
-    const Slot& robot3_slot = swap ? slots[0] : slots[1];
+    Slot robot2_slot = swap ? slots[1] : slots[0];
+    Slot robot3_slot = swap ? slots[0] : slots[1];
+    if (leader_assist_enabled_ && !circle_show) {
+      if (formation_changed) {
+        startLeaderAssistTransition(leader, robot2, robot3,
+                                    robot2_slot, robot3_slot, now);
+      }
+      if (leaderAssistSettled(leader, robot2, robot3, now)) {
+        leader_assist_.active = false;
+      } else {
+        robot2_slot.pose = leader_assist_.robot2_goal;
+        robot3_slot.pose = leader_assist_.robot3_goal;
+        leader_assist_goal_pub_.publish(
+            toPoseStamped(leader_assist_.leader_goal, now));
+      }
+    }
     const bool raw_leader_static =
         std::fabs(latest_leader_cmd_.leader_vx) < waypoint_leader_static_v_threshold_ &&
         std::fabs(latest_leader_cmd_.leader_vyaw) < waypoint_leader_static_w_threshold_;
@@ -902,6 +1035,7 @@ private:
   tf2_ros::Buffer tf_buffer_;
   tf2_ros::TransformListener tf_listener_;
   ros::Subscriber leader_cmd_sub_;
+  ros::Publisher leader_assist_goal_pub_;
   ros::Publisher robot2_goal_pub_;
   ros::Publisher robot3_goal_pub_;
   ros::Timer timer_;
@@ -924,6 +1058,7 @@ private:
   std::string robot2_odom_frame_;
   std::string robot3_odom_frame_;
   std::string leader_cmd_topic_;
+  std::string leader_assist_goal_topic_;
   std::string robot2_goal_topic_;
   std::string robot3_goal_topic_;
   bool enabled_;
@@ -958,6 +1093,12 @@ private:
   bool enable_odom_prediction_;
   double prediction_max_age_;
   double prediction_odom_max_age_;
+  bool leader_assist_enabled_;
+  double leader_assist_transition_timeout_;
+  double leader_assist_goal_tolerance_;
+  double leader_assist_yaw_tolerance_;
+  double leader_assist_participation_;
+  double leader_assist_max_shift_;
   PoseCache leader_cache_;
   PoseCache robot2_cache_;
   PoseCache robot3_cache_;
@@ -977,6 +1118,7 @@ private:
   double circle_robot2_phase_{0.0};
   double circle_robot3_phase_{0.0};
   ros::Time circle_phase_last_time_;
+  AssistTransition leader_assist_;
 };
 
 int main(int argc, char** argv) {

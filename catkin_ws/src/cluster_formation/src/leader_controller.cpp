@@ -14,6 +14,7 @@ LeaderController::LeaderController(const ros::NodeHandle& nh, const ros::NodeHan
   , follower_status_received_(false)
   , follower3_status_received_(false)
   , teleop_cmd_received_(false)
+  , formation_assist_goal_received_(false)
   , home_pose_received_(false)
   , return_home_active_(false)
   , current_mode_(cluster_msgs::LeaderCmd::MODE_IDLE)
@@ -40,6 +41,19 @@ LeaderController::LeaderController(const ros::NodeHandle& nh, const ros::NodeHan
   pnh_.param("return_home_max_linear_speed", return_home_max_linear_speed_, 0.35);
   pnh_.param("return_home_max_angular_speed", return_home_max_angular_speed_, 0.55);
   pnh_.param("return_home_use_map", return_home_use_map_, true);
+  pnh_.param("formation_assist_enabled", formation_assist_enabled_, true);
+  pnh_.param("formation_assist_goal_timeout",
+             formation_assist_goal_timeout_, 0.45);
+  pnh_.param("formation_assist_pos_tolerance",
+             formation_assist_pos_tolerance_, 0.08);
+  pnh_.param("formation_assist_yaw_tolerance",
+             formation_assist_yaw_tolerance_, 0.18);
+  pnh_.param("formation_assist_k_v", formation_assist_k_v_, 0.80);
+  pnh_.param("formation_assist_k_w", formation_assist_k_w_, 0.85);
+  pnh_.param("formation_assist_max_linear_speed",
+             formation_assist_max_linear_speed_, 0.24);
+  pnh_.param("formation_assist_max_angular_speed",
+             formation_assist_max_angular_speed_, 0.45);
   pnh_.param<std::string>("map_frame", map_frame_, "map");
   pnh_.param<std::string>("self_frame", self_frame_, "robot1/base_link");
   pnh_.param("circle_show_radius", circle_show_radius_, 0.5);
@@ -96,6 +110,8 @@ LeaderController::LeaderController(const ros::NodeHandle& nh, const ros::NodeHan
       &LeaderController::teleopVelCallback, this);
   nav_vel_sub_ = nh_.subscribe("/robot1/nav_vel", 1,
       &LeaderController::navVelCallback, this);
+  formation_assist_goal_sub_ = nh_.subscribe("/robot1/formation_assist_goal", 1,
+      &LeaderController::formationAssistGoalCallback, this);
   return_home_sub_ = nh_.subscribe("/robot1/return_home", 1,
       &LeaderController::returnHomeCallback, this);
   circle_exit_sub_ = nh_.subscribe("/robot1/circle_exit", 1,
@@ -271,6 +287,20 @@ void LeaderController::teleopVelCallback(const geometry_msgs::Twist::ConstPtr& m
     return;
   }
 
+  const bool zero_cmd =
+      std::fabs(msg->linear.x) < 0.01 &&
+      std::fabs(msg->angular.z) < 0.01;
+  const bool assist_fresh =
+      formation_assist_enabled_ &&
+      current_mode_ == cluster_msgs::LeaderCmd::MODE_FORMATION &&
+      current_formation_ != cluster_msgs::LeaderCmd::FORMATION_CIRCLE_SHOW &&
+      formation_assist_goal_received_ &&
+      (ros::Time::now() - last_formation_assist_goal_time_).toSec() <=
+          formation_assist_goal_timeout_;
+  if (assist_fresh && zero_cmd) {
+    return;
+  }
+
   if (!return_home_active_ && current_mode_ != cluster_msgs::LeaderCmd::MODE_IDLE) {
     publishCmdVel(applyAdaptiveFormationSpeed(*msg), false, false);
   }
@@ -285,6 +315,20 @@ void LeaderController::navVelCallback(const geometry_msgs::Twist::ConstPtr& msg)
     return;
   }
 
+  const bool zero_cmd =
+      std::fabs(msg->linear.x) < 0.01 &&
+      std::fabs(msg->angular.z) < 0.01;
+  const bool assist_fresh =
+      formation_assist_enabled_ &&
+      current_mode_ == cluster_msgs::LeaderCmd::MODE_FORMATION &&
+      current_formation_ != cluster_msgs::LeaderCmd::FORMATION_CIRCLE_SHOW &&
+      formation_assist_goal_received_ &&
+      (ros::Time::now() - last_formation_assist_goal_time_).toSec() <=
+          formation_assist_goal_timeout_;
+  if (assist_fresh && zero_cmd) {
+    return;
+  }
+
   if (!return_home_active_ &&
       current_mode_ != cluster_msgs::LeaderCmd::MODE_IDLE) {
     // DWA closes its control loop using the velocity it requested. Scaling
@@ -293,6 +337,13 @@ void LeaderController::navVelCallback(const geometry_msgs::Twist::ConstPtr& msg)
     // speed-limited by the DWA configuration.
     publishCmdVel(*msg, false, false);
   }
+}
+
+void LeaderController::formationAssistGoalCallback(
+    const geometry_msgs::PoseStamped::ConstPtr& msg) {
+  latest_formation_assist_goal_ = *msg;
+  formation_assist_goal_received_ = true;
+  last_formation_assist_goal_time_ = ros::Time::now();
 }
 
 void LeaderController::returnHomeCallback(const std_msgs::Bool::ConstPtr& msg) {
@@ -540,6 +591,75 @@ void LeaderController::computeReturnHome() {
   leader_cmd_pub_.publish(cached_leader_cmd_);
 }
 
+bool LeaderController::computeFormationAssist(geometry_msgs::Twist& cmd) {
+  if (!formation_assist_enabled_ || !formation_assist_goal_received_) {
+    return false;
+  }
+  if (current_formation_ == cluster_msgs::LeaderCmd::FORMATION_CIRCLE_SHOW ||
+      use_custom_offsets_ ||
+      circle_recovery_.phase() != CircleShowPhase::NORMAL) {
+    return false;
+  }
+  const ros::Time now = ros::Time::now();
+  if ((now - last_formation_assist_goal_time_).toSec() >
+      formation_assist_goal_timeout_) {
+    return false;
+  }
+  if (latest_formation_assist_goal_.header.frame_id != map_frame_) {
+    ROS_WARN_THROTTLE(2.0,
+        "Formation assist goal ignored: frame '%s' is not '%s'",
+        latest_formation_assist_goal_.header.frame_id.c_str(),
+        map_frame_.c_str());
+    return false;
+  }
+
+  cluster_common::Pose2D self;
+  if (!lookupSelfMapPose(self)) {
+    ROS_WARN_THROTTLE(2.0,
+        "Formation assist skipped: %s -> %s TF not ready",
+        map_frame_.c_str(), self_frame_.c_str());
+    return false;
+  }
+
+  const double target_x = latest_formation_assist_goal_.pose.position.x;
+  const double target_y = latest_formation_assist_goal_.pose.position.y;
+  const double target_yaw = tf2::getYaw(
+      latest_formation_assist_goal_.pose.orientation);
+  if (!std::isfinite(target_x) || !std::isfinite(target_y) ||
+      !std::isfinite(target_yaw)) {
+    return false;
+  }
+
+  const double dx = target_x - self.x;
+  const double dy = target_y - self.y;
+  const double distance = std::hypot(dx, dy);
+  const double c = std::cos(self.theta);
+  const double s = std::sin(self.theta);
+  const double forward_error = dx * c + dy * s;
+  const double yaw_err =
+      cluster_common::normalizeAngle(target_yaw - self.theta);
+  const double linear_limit =
+      std::min(max_linear_speed_, formation_assist_max_linear_speed_);
+  const double angular_limit =
+      std::min(max_angular_speed_, formation_assist_max_angular_speed_);
+
+  if (distance > formation_assist_pos_tolerance_) {
+    // Formation assist is not path navigation. Keep car1's heading stable and
+    // let it only creep forward/backward toward the shared formation center.
+    // Turning toward a behind-the-robot assist goal makes the whole formation
+    // orbit around car1 and destabilizes the followers.
+    cmd.linear.x = cluster_common::clamp(
+        formation_assist_k_v_ * forward_error,
+        -linear_limit, linear_limit);
+  } else if (std::fabs(yaw_err) > formation_assist_yaw_tolerance_) {
+    cmd.angular.z = cluster_common::clamp(
+        formation_assist_k_w_ * yaw_err,
+        -angular_limit, angular_limit);
+  }
+
+  return true;
+}
+
 bool LeaderController::lookupSelfMapPose(cluster_common::Pose2D& pose) {
   try {
     geometry_msgs::TransformStamped tf_msg = tf_buffer_.lookupTransform(
@@ -665,6 +785,13 @@ void LeaderController::computeFormationTarget() {
   } else if (circle_show_was_active_) {
     publishCmdVel(show_cmd, true, false);
     circle_show_was_active_ = false;
+  }
+
+  if (!circle_show && !circle_preparing && !recovering) {
+    geometry_msgs::Twist assist_cmd;
+    if (computeFormationAssist(assist_cmd)) {
+      publishCmdVel(assist_cmd);
+    }
   }
 
   // Get formation offset
