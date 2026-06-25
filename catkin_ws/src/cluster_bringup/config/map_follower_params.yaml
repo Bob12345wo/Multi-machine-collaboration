@@ -15,6 +15,10 @@ use_assigned_goal: true
 # Slot planner publishes dynamic goals continuously. Keep a short hold window so
 # followers do not fall back to static offsets during brief Wi-Fi/TF hiccups.
 assigned_goal_timeout: 1.2
+# CIRCLE_SHOW relies on the slot planner's moving orbit goals. If a single goal
+# update is delayed, hold the last orbit goal briefly instead of falling back to
+# the old local offset formula.
+circle_assigned_goal_hold_timeout: 3.0
 
 # Desired follower position in leader body frame.
 # body_orbit uses the leader body frame: X forward, Y left.
@@ -41,6 +45,14 @@ k_approach_heading: 1.55
 leader_vx_gain: 1.0
 leader_wz_gain: 0.9
 orbit_v_gain: 0.95
+circle_sync_enabled: true
+circle_sync_v_gain: 1.0
+circle_sync_w_gain: 1.0
+circle_sync_forward_gain: 0.45
+circle_sync_lateral_gain: 0.55
+circle_sync_yaw_gain: 0.35
+circle_sync_max_v_correction: 0.08
+circle_sync_max_w_correction: 0.22
 target_filter_alpha: 0.88
 cmd_filter_alpha: 0.95
 near_target_speed_gain: 0.80
@@ -57,6 +69,8 @@ turn_in_place_wz_threshold: 0.6
 max_turn_linear_speed: 0.34
 yaw_priority_vx_scale: 0.85
 turn_radius_compensation: false
+dynamic_tangent_yaw_enabled: true
+dynamic_tangent_min_speed: 0.04
 allow_reverse_while_leader_forward: true
 allow_orbit_reverse: true
 

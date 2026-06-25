@@ -18,6 +18,15 @@ loop_rate: 10
 leader_cmd_timeout: 1.0
 formation_spacing: 0.8
 circle_show_radius: 0.80
+# Key 3 starts from the current triangle layout, then locks each follower's
+# current orbit phase. This avoids car2 cutting through car3 when switching
+# directly from triangle to circle-show.
+circle_prepare_formation: 3
+circle_entry_blend_duration: 0.0
+# Maximum movement of each published CIRCLE_SHOW assigned goal per planner tick.
+# Increase slightly for faster entry; decrease if followers still cross paths.
+circle_goal_max_step: 0.06
+circle_goal_yaw_step: 0.20
 assignment_switch_margin: 0.25
 # Keep adaptive slot assignment, but reject swaps that would make robot2 and
 # robot3 cross through each other during formation switches.

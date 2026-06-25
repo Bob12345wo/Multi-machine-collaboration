@@ -13,7 +13,6 @@
 #include <tf2_ros/transform_listener.h>
 
 #include "cluster_common/pose_utils.h"
-#include "cluster_following/circle_slot_orbit.h"
 #include "cluster_msgs/LeaderCmd.h"
 
 class FormationSlotPlanner {
@@ -34,6 +33,14 @@ public:
     pnh_.param("leader_cmd_timeout", leader_cmd_timeout_, 0.6);
     pnh_.param("formation_spacing", formation_spacing_, 0.8);
     pnh_.param("circle_show_radius", circle_show_radius_, 0.5);
+    pnh_.param("circle_entry_blend_duration",
+               circle_entry_blend_duration_, 4.0);
+    pnh_.param("circle_goal_max_step", circle_goal_max_step_, 0.06);
+    pnh_.param("circle_goal_yaw_step", circle_goal_yaw_step_, 0.20);
+    int circle_prepare_formation = cluster_msgs::LeaderCmd::FORMATION_TRIANGLE;
+    pnh_.param("circle_prepare_formation", circle_prepare_formation,
+               static_cast<int>(cluster_msgs::LeaderCmd::FORMATION_TRIANGLE));
+    circle_prepare_formation_ = static_cast<uint8_t>(circle_prepare_formation);
     pnh_.param("assignment_switch_margin", assignment_switch_margin_, 0.15);
     pnh_.param("lock_robot_slots", lock_robot_slots_, false);
     pnh_.param("prevent_crossing_assignment", prevent_crossing_assignment_, true);
@@ -76,6 +83,10 @@ public:
   }
 
 private:
+  static constexpr double kPi = 3.14159265358979323846;
+  static constexpr double kTwoPi = 2.0 * kPi;
+  static constexpr double kHalfPi = 0.5 * kPi;
+
   struct Pose2D {
     double x;
     double y;
@@ -272,47 +283,186 @@ private:
     return slots;
   }
 
-  std::vector<Slot> buildCircleShowSlots(const Pose2D& leader,
-                                         double now_sec) {
-    if (!circle_orbit_.active()) {
-      circle_orbit_.enter(toOrbitPose(leader), circle_show_radius_,
-                          latest_leader_cmd_.leader_vyaw, now_sec);
+  Pose2D circleCenterFromLeader(const Pose2D& leader) const {
+    Pose2D center;
+    center.x = leader.x - circle_show_radius_ * std::sin(leader.yaw);
+    center.y = leader.y + circle_show_radius_ * std::cos(leader.yaw);
+    center.yaw = 0.0;
+    return center;
+  }
+
+  double phaseFromRobotOrFallback(const Pose2D& robot,
+                                  const Pose2D& center,
+                                  double fallback_phase) const {
+    const double dx = robot.x - center.x;
+    const double dy = robot.y - center.y;
+    if (std::hypot(dx, dy) < 0.10) {
+      return fallback_phase;
     }
-    circle_orbit_.update(now_sec, latest_leader_cmd_.leader_vyaw);
-    const auto orbit_slots = circle_orbit_.slots(now_sec);
+    return std::atan2(dy, dx);
+  }
+
+  void initializeCirclePhaseSlots(const Pose2D& leader,
+                                  const Pose2D& robot2,
+                                  const Pose2D& robot3,
+                                  const ros::Time& now) {
+    circle_center_ = circleCenterFromLeader(leader);
+    circle_robot2_entry_slot_ = poseAsLeaderRelativeSlot(leader, robot2);
+    circle_robot3_entry_slot_ = poseAsLeaderRelativeSlot(leader, robot3);
+    circle_entry_slots_initialized_ = true;
+    const double leader_phase = phaseFromRobotOrFallback(
+        leader, circle_center_, cluster_common::normalizeAngle(leader.yaw - kHalfPi));
+    const double direction = latest_leader_cmd_.leader_vyaw >= 0.0 ? 1.0 : -1.0;
+    const double phase_a = cluster_common::normalizeAngle(
+        leader_phase - direction * kTwoPi / 3.0);
+    const double phase_b = cluster_common::normalizeAngle(
+        leader_phase - direction * 2.0 * kTwoPi / 3.0);
+
+    Slot slot_a = buildCirclePhaseSlot(leader, phase_a,
+                                       latest_leader_cmd_.leader_vyaw);
+    Slot slot_b = buildCirclePhaseSlot(leader, phase_b,
+                                       latest_leader_cmd_.leader_vyaw);
+    const double keep_cost =
+        distance2(robot2, slot_a.pose) + distance2(robot3, slot_b.pose);
+    const double swap_cost =
+        distance2(robot2, slot_b.pose) + distance2(robot3, slot_a.pose);
+    const bool keep_safe = assignmentSafe(robot2, robot3, slot_a, slot_b);
+    const bool swap_safe = assignmentSafe(robot2, robot3, slot_b, slot_a);
+    const bool swap = swap_safe && (!keep_safe || swap_cost < keep_cost);
+    circle_robot2_phase_ = swap ? phase_b : phase_a;
+    circle_robot3_phase_ = swap ? phase_a : phase_b;
+    circle_phase_last_time_ = now;
+    circle_phase_slots_initialized_ = true;
+    ROS_INFO("CIRCLE_SHOW phase slots locked: robot2_phase=%.2f robot3_phase=%.2f "
+             "assign=%s cost(keep=%.2f,swap=%.2f) safe(keep=%d,swap=%d) "
+             "center=(%.2f,%.2f)",
+             circle_robot2_phase_, circle_robot3_phase_, swap ? "swap" : "keep",
+             keep_cost, swap_cost, keep_safe ? 1 : 0, swap_safe ? 1 : 0,
+             circle_center_.x, circle_center_.y);
+  }
+
+  Slot buildCirclePhaseSlot(const Pose2D& leader,
+                            double phase,
+                            double angular_speed) const {
+    Slot slot;
+    slot.pose.x = circle_center_.x + circle_show_radius_ * std::cos(phase);
+    slot.pose.y = circle_center_.y + circle_show_radius_ * std::sin(phase);
+    const double tangent_sign = angular_speed >= 0.0 ? 1.0 : -1.0;
+    slot.pose.yaw = cluster_common::normalizeAngle(
+        phase + tangent_sign * kHalfPi);
+
+    const double dx = slot.pose.x - leader.x;
+    const double dy = slot.pose.y - leader.y;
+    const double c = std::cos(leader.yaw);
+    const double s = std::sin(leader.yaw);
+    slot.offset_x = dx * c + dy * s;
+    slot.offset_y = -dx * s + dy * c;
+    slot.offset_yaw = cluster_common::normalizeAngle(slot.pose.yaw -
+                                                     leader.yaw);
+    return slot;
+  }
+
+  Slot poseAsLeaderRelativeSlot(const Pose2D& leader,
+                                const Pose2D& pose) const {
+    Slot slot;
+    slot.pose = pose;
+    const double dx = pose.x - leader.x;
+    const double dy = pose.y - leader.y;
+    const double c = std::cos(leader.yaw);
+    const double s = std::sin(leader.yaw);
+    slot.offset_x = dx * c + dy * s;
+    slot.offset_y = -dx * s + dy * c;
+    slot.offset_yaw = cluster_common::normalizeAngle(pose.yaw - leader.yaw);
+    return slot;
+  }
+
+  std::vector<Slot> buildCircleShowSlots(const Pose2D& leader,
+                                         const ros::Time& now) {
+    if (!circle_phase_slots_initialized_) {
+      return buildSlots(leader, circle_prepare_formation_);
+    }
+
+    double dt = 0.0;
+    if (!circle_phase_last_time_.isZero()) {
+      dt = std::max(0.0, (now - circle_phase_last_time_).toSec());
+    }
+    circle_phase_last_time_ = now;
+    const double angular_speed = latest_leader_cmd_.leader_vyaw;
+    circle_robot2_phase_ = cluster_common::normalizeAngle(
+        circle_robot2_phase_ + angular_speed * dt);
+    circle_robot3_phase_ = cluster_common::normalizeAngle(
+        circle_robot3_phase_ + angular_speed * dt);
 
     std::vector<Slot> slots;
     slots.reserve(2);
-    for (const auto& orbit_slot : orbit_slots) {
-      const double dx = orbit_slot.pose.x - leader.x;
-      const double dy = orbit_slot.pose.y - leader.y;
-      const double c = std::cos(leader.yaw);
-      const double s = std::sin(leader.yaw);
-      Slot slot;
-      slot.offset_x = dx * c + dy * s;
-      slot.offset_y = -dx * s + dy * c;
-      slot.offset_yaw = cluster_common::normalizeAngle(
-          orbit_slot.pose.yaw - leader.yaw);
-      slot.pose = fromOrbitPose(orbit_slot.pose);
-      slots.push_back(slot);
-    }
+    // Circle-show uses fixed robot-specific phase ownership. Robot2 and robot3
+    // keep the phase captured at entry, so neither follower crosses through the
+    // other follower to claim a different orbit slot.
+    slots.push_back(buildCirclePhaseSlot(leader, circle_robot2_phase_,
+                                         angular_speed));
+    slots.push_back(buildCirclePhaseSlot(leader, circle_robot3_phase_,
+                                         angular_speed));
     return slots;
   }
 
-  static cluster_following::Pose2D toOrbitPose(const Pose2D& pose) {
-    cluster_following::Pose2D out;
-    out.x = pose.x;
-    out.y = pose.y;
-    out.yaw = pose.yaw;
-    return out;
+  std::vector<Slot> blendSlots(const std::vector<Slot>& from,
+                               const std::vector<Slot>& to,
+                               double ratio) const {
+    if (from.size() != to.size()) {
+      return to;
+    }
+    ratio = cluster_common::clamp(ratio, 0.0, 1.0);
+    std::vector<Slot> blended;
+    blended.reserve(to.size());
+    for (std::size_t i = 0; i < to.size(); ++i) {
+      Slot slot;
+      slot.offset_x = from[i].offset_x +
+          (to[i].offset_x - from[i].offset_x) * ratio;
+      slot.offset_y = from[i].offset_y +
+          (to[i].offset_y - from[i].offset_y) * ratio;
+      slot.offset_yaw = cluster_common::normalizeAngle(
+          from[i].offset_yaw +
+          cluster_common::normalizeAngle(to[i].offset_yaw -
+                                         from[i].offset_yaw) * ratio);
+      slot.pose.x = from[i].pose.x + (to[i].pose.x - from[i].pose.x) * ratio;
+      slot.pose.y = from[i].pose.y + (to[i].pose.y - from[i].pose.y) * ratio;
+      slot.pose.yaw = cluster_common::normalizeAngle(
+          from[i].pose.yaw +
+          cluster_common::normalizeAngle(to[i].pose.yaw -
+                                         from[i].pose.yaw) * ratio);
+      blended.push_back(slot);
+    }
+    return blended;
   }
 
-  static Pose2D fromOrbitPose(const cluster_following::Pose2D& pose) {
-    Pose2D out;
-    out.x = pose.x;
-    out.y = pose.y;
-    out.yaw = pose.yaw;
-    return out;
+  std::vector<Slot> buildCurrentSlots(const Pose2D& leader,
+                                      const ros::Time& now) {
+    if (latest_leader_cmd_.formation !=
+        cluster_msgs::LeaderCmd::FORMATION_CIRCLE_SHOW) {
+      return buildSlots(leader, latest_leader_cmd_.formation);
+    }
+
+    std::vector<Slot> entry_slots = buildSlots(leader, circle_prepare_formation_);
+    if (circle_entry_slots_initialized_) {
+      entry_slots.clear();
+      entry_slots.push_back(circle_robot2_entry_slot_);
+      entry_slots.push_back(circle_robot3_entry_slot_);
+    }
+    if (!circle_show_started_) {
+      return entry_slots;
+    }
+
+    std::vector<Slot> orbit_slots = buildCircleShowSlots(leader, now);
+    if (circle_entry_blend_duration_ <= 0.0 ||
+        circle_show_started_time_.isZero()) {
+      return orbit_slots;
+    }
+
+    const double age = (now - circle_show_started_time_).toSec();
+    if (age >= circle_entry_blend_duration_) {
+      return orbit_slots;
+    }
+    return blendSlots(entry_slots, orbit_slots, age / circle_entry_blend_duration_);
   }
 
   static double distance2(const Pose2D& a, const Pose2D& b) {
@@ -484,6 +634,37 @@ private:
     held_goal.clearance = published_dist;
   }
 
+  Pose2D limitCircleGoalStep(const Pose2D& robot,
+                             const Pose2D& requested,
+                             Pose2D& last_goal,
+                             bool& has_last_goal) const {
+    if (!has_last_goal) {
+      last_goal = robot;
+      has_last_goal = true;
+    }
+
+    Pose2D limited = requested;
+    const double dx = requested.x - last_goal.x;
+    const double dy = requested.y - last_goal.y;
+    const double dist = std::hypot(dx, dy);
+    if (circle_goal_max_step_ > 0.0 && dist > circle_goal_max_step_) {
+      const double scale = circle_goal_max_step_ / dist;
+      limited.x = last_goal.x + dx * scale;
+      limited.y = last_goal.y + dy * scale;
+    }
+
+    const double yaw_delta =
+        cluster_common::normalizeAngle(requested.yaw - last_goal.yaw);
+    if (circle_goal_yaw_step_ > 0.0 &&
+        std::fabs(yaw_delta) > circle_goal_yaw_step_) {
+      limited.yaw = cluster_common::normalizeAngle(
+          last_goal.yaw + std::copysign(circle_goal_yaw_step_, yaw_delta));
+    }
+
+    last_goal = limited;
+    return limited;
+  }
+
   static double distancePointToSegment(double px, double py,
                                        double ax, double ay,
                                        double bx, double by) {
@@ -548,6 +729,13 @@ private:
       formation_active_ = false;
       static_candidate_since_ = ros::Time(0);
       yielding_robot_ = 0;
+      circle_show_started_ = false;
+      circle_show_started_time_ = ros::Time(0);
+      circle_phase_slots_initialized_ = false;
+      circle_entry_slots_initialized_ = false;
+      circle_robot2_goal_initialized_ = false;
+      circle_robot3_goal_initialized_ = false;
+      circle_phase_last_time_ = ros::Time(0);
       return;
     }
 
@@ -576,19 +764,24 @@ private:
       yielding_robot_ = 0;
       static_candidate_since_ = ros::Time(0);
       last_formation_ = latest_leader_cmd_.formation;
-      if (latest_leader_cmd_.formation == cluster_msgs::LeaderCmd::FORMATION_CIRCLE_SHOW) {
-        circle_orbit_.enter(toOrbitPose(leader), circle_show_radius_,
-                            latest_leader_cmd_.leader_vyaw, now.toSec());
-        circle_show_started_ = false;
-      } else {
-        circle_orbit_.reset();
-        circle_show_started_ = false;
-      }
+      circle_show_started_ = false;
+      circle_show_started_time_ = ros::Time(0);
+      circle_phase_slots_initialized_ = false;
+      circle_entry_slots_initialized_ = false;
+      circle_robot2_goal_initialized_ = false;
+      circle_robot3_goal_initialized_ = false;
+      circle_phase_last_time_ = ros::Time(0);
     }
-    std::vector<Slot> slots =
-        latest_leader_cmd_.formation == cluster_msgs::LeaderCmd::FORMATION_CIRCLE_SHOW
-        ? buildCircleShowSlots(leader, now.toSec())
-        : buildSlots(leader, latest_leader_cmd_.formation);
+    const bool circle_show =
+        latest_leader_cmd_.formation == cluster_msgs::LeaderCmd::FORMATION_CIRCLE_SHOW;
+    if (circle_show &&
+        !circle_show_started_ &&
+        std::fabs(latest_leader_cmd_.leader_vyaw) >= waypoint_leader_static_w_threshold_) {
+      circle_show_started_ = true;
+      circle_show_started_time_ = now;
+      initializeCirclePhaseSlots(leader, robot2, robot3, now);
+    }
+    std::vector<Slot> slots = buildCurrentSlots(leader, now);
     if (slots.size() < 2) return;
 
     const double keep_order_cost =
@@ -597,19 +790,13 @@ private:
         distance2(robot2, slots[1].pose) + distance2(robot3, slots[0].pose);
     const bool keep_safe = assignmentSafe(robot2, robot3, slots[0], slots[1]);
     const bool swap_safe = assignmentSafe(robot2, robot3, slots[1], slots[0]);
-    const bool circle_show =
-        latest_leader_cmd_.formation == cluster_msgs::LeaderCmd::FORMATION_CIRCLE_SHOW;
-    if (circle_show &&
-        std::fabs(latest_leader_cmd_.leader_vyaw) >= waypoint_leader_static_w_threshold_) {
-      circle_show_started_ = true;
-    }
-    const bool circle_show_preparing = circle_show && !circle_show_started_;
     bool swap = false;
     if (lock_robot_slots_) {
       assignment_initialized_ = true;
-    } else if (circle_show_preparing) {
-      swap = (swap_safe && (!keep_safe ||
-          swap_cost + assignment_switch_margin_ < keep_order_cost));
+    } else if (circle_show) {
+      // Circle-show uses fixed robot-specific phase ownership. Dynamic
+      // swapping here makes robot2 cut through robot3 when entering the orbit.
+      swap = false;
       assignment_initialized_ = true;
     } else if (!assignment_initialized_) {
       swap = (swap_safe && (!keep_safe ||
@@ -650,15 +837,44 @@ private:
     }
     const bool leader_static = raw_leader_static &&
         (now - static_candidate_since_).toSec() >= waypoint_leader_static_dwell_;
+    const bool planning_static = leader_static || circle_show;
     PlannedGoal robot2_goal =
-        planWaypoint(robot2, robot2_slot, leader, robot3, leader_static,
+        planWaypoint(robot2, robot2_slot, leader, robot3, planning_static,
                      robot2_waypoint_);
     PlannedGoal robot3_goal =
-        planWaypoint(robot3, robot3_slot, leader, robot2, leader_static,
+        planWaypoint(robot3, robot3_slot, leader, robot2, planning_static,
                      robot3_waypoint_);
     const bool selected_paths_safe = swap ? swap_safe : keep_safe;
-    resolveGoalConflict(robot2_goal, robot3_goal, robot2_slot, robot3_slot,
-                        robot2, robot3, selected_paths_safe, leader_static);
+    if (circle_show) {
+      // Circle-show is a moving orbit, not a static formation switch. The
+      // waypoint/yielding layer intentionally holds one follower still during
+      // static slot changes; applying it here breaks phase synchronization and
+      // makes one follower cut across or stop while the others orbit.
+      yielding_robot_ = 0;
+      robot2_waypoint_.active = false;
+      robot3_waypoint_.active = false;
+      robot2_goal.pose = robot2_slot.pose;
+      robot2_goal.detour = false;
+      robot2_goal.reason = "circle";
+      robot3_goal.pose = robot3_slot.pose;
+      robot3_goal.detour = false;
+      robot3_goal.reason = "circle";
+      ROS_INFO_THROTTLE(5.0,
+          "CIRCLE_SHOW direct orbit goals: r2=(%.2f,%.2f) r3=(%.2f,%.2f)",
+          robot2_goal.pose.x, robot2_goal.pose.y,
+          robot3_goal.pose.x, robot3_goal.pose.y);
+      robot2_goal.pose = limitCircleGoalStep(
+          robot2, robot2_goal.pose, circle_robot2_last_goal_,
+          circle_robot2_goal_initialized_);
+      robot3_goal.pose = limitCircleGoalStep(
+          robot3, robot3_goal.pose, circle_robot3_last_goal_,
+          circle_robot3_goal_initialized_);
+    } else {
+      resolveGoalConflict(robot2_goal, robot3_goal, robot2_slot, robot3_slot,
+                          robot2, robot3, selected_paths_safe, planning_static);
+      circle_robot2_goal_initialized_ = false;
+      circle_robot3_goal_initialized_ = false;
+    }
     robot2_goal_pub_.publish(toPoseStamped(robot2_goal.pose, now));
     robot3_goal_pub_.publish(toPoseStamped(robot3_goal.pose, now));
 
@@ -715,6 +931,10 @@ private:
   double leader_cmd_timeout_;
   double formation_spacing_;
   double circle_show_radius_;
+  double circle_entry_blend_duration_;
+  double circle_goal_max_step_;
+  double circle_goal_yaw_step_;
+  uint8_t circle_prepare_formation_;
   double assignment_switch_margin_;
   bool lock_robot_slots_;
   bool prevent_crossing_assignment_;
@@ -743,8 +963,20 @@ private:
   PoseCache robot3_cache_;
   WaypointState robot2_waypoint_;
   WaypointState robot3_waypoint_;
-  cluster_following::CircleOrbitSlotPlanner circle_orbit_;
   bool circle_show_started_{false};
+  ros::Time circle_show_started_time_;
+  bool circle_phase_slots_initialized_{false};
+  bool circle_entry_slots_initialized_{false};
+  Pose2D circle_center_{0.0, 0.0, 0.0};
+  Slot circle_robot2_entry_slot_;
+  Slot circle_robot3_entry_slot_;
+  bool circle_robot2_goal_initialized_{false};
+  bool circle_robot3_goal_initialized_{false};
+  Pose2D circle_robot2_last_goal_{0.0, 0.0, 0.0};
+  Pose2D circle_robot3_last_goal_{0.0, 0.0, 0.0};
+  double circle_robot2_phase_{0.0};
+  double circle_robot3_phase_{0.0};
+  ros::Time circle_phase_last_time_;
 };
 
 int main(int argc, char** argv) {

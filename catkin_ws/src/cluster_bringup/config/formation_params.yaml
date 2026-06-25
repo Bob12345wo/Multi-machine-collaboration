@@ -46,11 +46,11 @@ return_home_max_angular_speed: 0.50
 # 120-degree phase positions on the same circle.  Key e stops car1 and
 # safely restores the ordinary formation that was active before circle-show.
 circle_show_radius: 0.80
-circle_show_angular_speed: 0.16
+circle_show_angular_speed: 0.30
 circle_start_settle_error: 0.16
 circle_start_settle_dwell: 0.6
 circle_start_max_wait: 3.0
-circle_pause_error: 0.30
-circle_slow_scale: 0.25
+circle_pause_error: 0.65
+circle_slow_scale: 0.55
 circle_exit_settle_error: 0.12
 circle_exit_settle_dwell: 1.0

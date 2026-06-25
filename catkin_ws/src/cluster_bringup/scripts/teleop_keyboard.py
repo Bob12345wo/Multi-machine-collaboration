@@ -44,10 +44,22 @@ class TeleopKeyboard:
         # Publisher
         teleop_topic = '/' + self.ns + '/teleop_vel' if self.ns else '/teleop_vel'
         self.pub = rospy.Publisher(teleop_topic, Twist, queue_size=1)
-        self.control_mode_pub = rospy.Publisher(
-            '/robot2/follower_control_mode', String, queue_size=1, latch=True)
-        self.avoidance_pub = rospy.Publisher(
-            '/robot2/avoidance_enabled', Bool, queue_size=1, latch=True)
+        self.control_mode_pubs = [
+            rospy.Publisher(
+                '/robot2/follower_control_mode', String,
+                queue_size=1, latch=True),
+            rospy.Publisher(
+                '/robot3/follower_control_mode', String,
+                queue_size=1, latch=True),
+        ]
+        self.avoidance_pubs = [
+            rospy.Publisher(
+                '/robot2/avoidance_enabled', Bool,
+                queue_size=1, latch=True),
+            rospy.Publisher(
+                '/robot3/avoidance_enabled', Bool,
+                queue_size=1, latch=True),
+        ]
         self.return_home_pub = rospy.Publisher(
             '/robot1/return_home', Bool, queue_size=1)
         self.circle_exit_pub = rospy.Publisher(
@@ -172,7 +184,9 @@ class TeleopKeyboard:
     def switch_follower_control_mode(self):
         self.control_mode_index = (self.control_mode_index + 1) % len(self.control_modes)
         mode = self.control_modes[self.control_mode_index]
-        self.control_mode_pub.publish(String(data=mode))
+        msg = String(data=mode)
+        for pub in self.control_mode_pubs:
+            pub.publish(msg)
         rospy.loginfo("Follower control mode: %s", mode)
 
     def return_home(self):
@@ -185,7 +199,9 @@ class TeleopKeyboard:
 
     def toggle_avoidance(self):
         self.avoidance_enabled = not self.avoidance_enabled
-        self.avoidance_pub.publish(Bool(data=self.avoidance_enabled))
+        msg = Bool(data=self.avoidance_enabled)
+        for pub in self.avoidance_pubs:
+            pub.publish(msg)
         rospy.loginfo("Avoidance filter: %s",
                       "enabled" if self.avoidance_enabled else "disabled")
 

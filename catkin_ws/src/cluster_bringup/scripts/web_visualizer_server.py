@@ -987,8 +987,14 @@ class ClusterWebVisualizer(object):
                                             queue_size=1)
         self.nav_cancel_pub = rospy.Publisher('/robot1/move_base/cancel', GoalID,
                                               queue_size=1)
-        self.control_mode_pub = rospy.Publisher('/robot2/follower_control_mode', String, queue_size=1, latch=True)
-        self.avoidance_pub = rospy.Publisher('/robot2/avoidance_enabled', Bool, queue_size=1, latch=True)
+        self.control_mode_pubs = [
+            rospy.Publisher('/robot2/follower_control_mode', String, queue_size=1, latch=True),
+            rospy.Publisher('/robot3/follower_control_mode', String, queue_size=1, latch=True),
+        ]
+        self.avoidance_pubs = [
+            rospy.Publisher('/robot2/avoidance_enabled', Bool, queue_size=1, latch=True),
+            rospy.Publisher('/robot3/avoidance_enabled', Bool, queue_size=1, latch=True),
+        ]
         self.set_mode_srv_name = '/robot1/set_mode'
         self.set_formation_srv_name = '/robot1/set_formation'
 
@@ -1348,7 +1354,9 @@ class ClusterWebVisualizer(object):
                 with self.state_lock:
                     self.avoidance_enabled = not self.avoidance_enabled
                     value = self.avoidance_enabled
-                self.avoidance_pub.publish(Bool(data=value))
+                msg = Bool(data=value)
+                for pub in self.avoidance_pubs:
+                    pub.publish(msg)
                 return {'ok': True, 'message': 'avoidance set to %s' % value}
             if action == 'set_control_mode':
                 value = str(payload.get('value', 'body_orbit'))
@@ -1356,7 +1364,9 @@ class ClusterWebVisualizer(object):
                     return {'ok': False, 'message': 'unsupported control mode'}
                 with self.state_lock:
                     self.control_mode = value
-                self.control_mode_pub.publish(String(data=value))
+                msg = String(data=value)
+                for pub in self.control_mode_pubs:
+                    pub.publish(msg)
                 return {'ok': True, 'message': 'control mode set to %s' % value}
             return {'ok': False, 'message': 'unsupported action'}
         except Exception as exc:

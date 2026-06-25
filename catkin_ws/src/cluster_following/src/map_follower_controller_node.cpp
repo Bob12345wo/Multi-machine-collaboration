@@ -42,6 +42,8 @@ public:
     pnh_.param("circle_show_radius", circle_show_radius_, 0.5);
     pnh_.param("use_assigned_goal", use_assigned_goal_, true);
     pnh_.param("assigned_goal_timeout", assigned_goal_timeout_, 0.7);
+    pnh_.param("circle_assigned_goal_hold_timeout",
+               circle_assigned_goal_hold_timeout_, 3.0);
     pnh_.param("offset_x", offset_x_, -0.8);
     pnh_.param("offset_y", offset_y_, 0.0);
     pnh_.param("loop_rate", loop_rate_, 20.0);
@@ -60,6 +62,16 @@ public:
     pnh_.param("leader_vx_gain", leader_vx_gain_, 1.0);
     pnh_.param("leader_wz_gain", leader_wz_gain_, 0.8);
     pnh_.param("orbit_v_gain", orbit_v_gain_, 0.8);
+    pnh_.param("circle_sync_enabled", circle_sync_enabled_, true);
+    pnh_.param("circle_sync_v_gain", circle_sync_v_gain_, 1.0);
+    pnh_.param("circle_sync_w_gain", circle_sync_w_gain_, 1.0);
+    pnh_.param("circle_sync_forward_gain", circle_sync_forward_gain_, 0.45);
+    pnh_.param("circle_sync_lateral_gain", circle_sync_lateral_gain_, 0.55);
+    pnh_.param("circle_sync_yaw_gain", circle_sync_yaw_gain_, 0.35);
+    pnh_.param("circle_sync_max_v_correction",
+               circle_sync_max_v_correction_, 0.08);
+    pnh_.param("circle_sync_max_w_correction",
+               circle_sync_max_w_correction_, 0.22);
     pnh_.param("target_filter_alpha", target_filter_alpha_, 0.35);
     pnh_.param("cmd_filter_alpha", cmd_filter_alpha_, 0.45);
     pnh_.param("near_target_speed_gain", near_target_speed_gain_, 0.80);
@@ -76,6 +88,10 @@ public:
     pnh_.param("max_turn_linear_speed", max_turn_linear_speed_, 0.08);
     pnh_.param("yaw_priority_vx_scale", yaw_priority_vx_scale_, 0.25);
     pnh_.param("turn_radius_compensation", turn_radius_compensation_, true);
+    pnh_.param("dynamic_tangent_yaw_enabled",
+               dynamic_tangent_yaw_enabled_, true);
+    pnh_.param("dynamic_tangent_min_speed",
+               dynamic_tangent_min_speed_, 0.04);
     pnh_.param("allow_reverse_while_leader_forward", allow_reverse_while_leader_forward_, false);
     pnh_.param("allow_orbit_reverse", allow_orbit_reverse_, true);
     pnh_.param("debug_enabled", debug_enabled_, false);
@@ -111,6 +127,10 @@ public:
       assigned_goal_sub_ = nh_.subscribe(assigned_goal_topic_, 1,
           &MapFollowerController::assignedGoalCallback, this);
     }
+    ROS_INFO("MapFollowerController: follower_index=%d use_assigned_goal=%d assigned_goal_topic=%s cmd_vel_topic=%s",
+             follower_index_, use_assigned_goal_ ? 1 : 0,
+             assigned_goal_topic_.empty() ? "<none>" : assigned_goal_topic_.c_str(),
+             cmd_vel_topic_.c_str());
     control_mode_sub_ = nh_.subscribe(control_mode_topic_, 1,
         &MapFollowerController::controlModeCallback, this);
     if (use_imu_yaw_assist_) {
@@ -168,6 +188,10 @@ private:
     latest_assigned_goal_ = *msg;
     assigned_goal_received_ = true;
     last_assigned_goal_time_ = ros::Time::now();
+    ROS_INFO_THROTTLE(5.0,
+        "Assigned goal active on %s frame=%s x=%.2f y=%.2f",
+        assigned_goal_topic_.c_str(), msg->header.frame_id.c_str(),
+        msg->pose.position.x, msg->pose.position.y);
   }
 
   void controlModeCallback(const std_msgs::String::ConstPtr& msg) {
@@ -481,10 +505,36 @@ private:
     double target_y = leader.y + active_offset_x * sin_l + active_offset_y * cos_l;
     double target_yaw = cluster_common::normalizeAngle(leader.yaw + active_offset_yaw);
 
-    const bool assigned_goal_fresh = use_assigned_goal_ && assigned_goal_received_ &&
-        (ros::Time::now() - last_assigned_goal_time_).toSec() <= assigned_goal_timeout_ &&
+    const ros::Time now = ros::Time::now();
+    const bool assigned_goal_valid = use_assigned_goal_ && assigned_goal_received_ &&
         latest_assigned_goal_.header.frame_id == map_frame_;
-    if (assigned_goal_fresh) {
+    const double assigned_goal_age = assigned_goal_valid
+        ? (now - last_assigned_goal_time_).toSec()
+        : 999.0;
+    const bool assigned_goal_fresh =
+        assigned_goal_valid && assigned_goal_age <= assigned_goal_timeout_;
+    const bool circle_show_mode =
+        latest_leader_cmd_.formation == cluster_msgs::LeaderCmd::FORMATION_CIRCLE_SHOW;
+    const bool circle_assigned_goal_held =
+        circle_show_mode && assigned_goal_valid &&
+        assigned_goal_age <= circle_assigned_goal_hold_timeout_;
+    const bool assigned_goal_active =
+        assigned_goal_fresh || circle_assigned_goal_held;
+
+    if (circle_show_mode && !assigned_goal_active) {
+      stop();
+      publishStatus(cluster_msgs::FollowerStatus::STATE_LOST,
+                    0.0, 0.0, 0.0, 0.0, false);
+      ROS_WARN_THROTTLE(2.0,
+          "CIRCLE_SHOW requires assigned goal on %s; holding stop "
+          "(use=%d received=%d valid=%d age=%.2f)",
+          assigned_goal_topic_.empty() ? "<none>" : assigned_goal_topic_.c_str(),
+          use_assigned_goal_ ? 1 : 0, assigned_goal_received_ ? 1 : 0,
+          assigned_goal_valid ? 1 : 0, assigned_goal_age);
+      return;
+    }
+
+    if (assigned_goal_active) {
       target_x = latest_assigned_goal_.pose.position.x;
       target_y = latest_assigned_goal_.pose.position.y;
       target_yaw = tf2::getYaw(latest_assigned_goal_.pose.orientation);
@@ -495,11 +545,22 @@ private:
       active_offset_y = -map_dx * sin_l + map_dy * cos_l;
       active_offset_yaw = cluster_common::normalizeAngle(target_yaw - leader.yaw);
     }
-    const bool circle_assigned_goal = assigned_goal_fresh &&
-        latest_leader_cmd_.formation == cluster_msgs::LeaderCmd::FORMATION_CIRCLE_SHOW;
+    const bool circle_assigned_goal = circle_show_mode && assigned_goal_active;
 
     const double leader_vx = latest_leader_cmd_.leader_vx;
     const double leader_wz = latest_leader_cmd_.leader_vyaw;
+
+    const double offset_map_x = active_offset_x * cos_l - active_offset_y * sin_l;
+    const double offset_map_y = active_offset_x * sin_l + active_offset_y * cos_l;
+    const double target_vel_x = leader_vx * cos_l - leader_wz * offset_map_y;
+    const double target_vel_y = leader_vx * sin_l + leader_wz * offset_map_x;
+    const double target_speed = std::hypot(target_vel_x, target_vel_y);
+    const bool dynamic_tangent_yaw =
+        dynamic_tangent_yaw_enabled_ &&
+        circle_show_mode &&
+        control_mode_ == "body_orbit" &&
+        target_speed > dynamic_tangent_min_speed_ &&
+        std::fabs(leader_wz) > min_angular_speed_;
 
     if (control_mode_ == "wheeltec_global" && !circle_assigned_goal) {
       const double cos_a = std::cos(formation_anchor_yaw_);
@@ -514,19 +575,22 @@ private:
           leader.yaw + active_offset_yaw +
           std::atan2(active_offset_y, active_offset_x + radius));
     }
+    if (dynamic_tangent_yaw) {
+      target_yaw = std::atan2(target_vel_y, target_vel_x);
+    }
 
     Pose2D final_target{target_x, target_y, target_yaw};
     const bool leader_static_for_path =
         std::fabs(leader_vx) < static_leader_v_threshold_ &&
         std::fabs(leader_wz) < static_leader_w_threshold_;
     Pose2D raw_target = final_target;
-    if (!assigned_goal_fresh) {
+    if (!assigned_goal_active) {
       raw_target = applyPathKeepout(leader, follower, final_target,
                                     leader_static_for_path);
     } else {
       path_detour_active_ = false;
     }
-    Pose2D target = filterTarget(raw_target);
+    Pose2D target = circle_assigned_goal ? raw_target : filterTarget(raw_target);
 
     const double dx = target.x - follower.x;
     const double dy = target.y - follower.y;
@@ -620,6 +684,12 @@ private:
 
     double vx = 0.0;
     double wz = 0.0;
+    const bool circle_sync =
+        circle_sync_enabled_ &&
+        circle_assigned_goal &&
+        std::fabs(leader_wz) > min_angular_speed_ &&
+        target_speed > dynamic_tangent_min_speed_;
+
     if (leader_static && position_settled) {
       vx = 0.0;
       if (yaw_needs_alignment && !settled_) {
@@ -628,14 +698,30 @@ private:
                                    -final_spin_max_angular_speed_,
                                    final_spin_max_angular_speed_);
       }
+    } else if (circle_sync) {
+      const double base_vx = circle_sync_v_gain_ * target_speed;
+      const double vx_correction = cluster_common::clamp(
+          circle_sync_forward_gain_ * forward_err,
+          -circle_sync_max_v_correction_, circle_sync_max_v_correction_);
+      const double wz_correction = cluster_common::clamp(
+          circle_sync_lateral_gain_ * lateral_err +
+          circle_sync_yaw_gain_ * yaw_cmd_err,
+          -circle_sync_max_w_correction_, circle_sync_max_w_correction_);
+      vx = base_vx + vx_correction;
+      wz = circle_sync_w_gain_ * leader_wz + wz_correction;
     } else {
       double vx_ff = leader_vx_gain_ * leader_vx;
       if (control_mode_ == "body_orbit") {
-        const double offset_map_x = active_offset_x * cos_l - active_offset_y * sin_l;
-        const double offset_map_y = active_offset_x * sin_l + active_offset_y * cos_l;
-        const double target_vel_x = leader_vx * cos_l - leader_wz * offset_map_y;
-        const double target_vel_y = leader_vx * sin_l + leader_wz * offset_map_x;
-        vx_ff = orbit_v_gain_ * (target_vel_x * cos_f + target_vel_y * sin_f);
+        const double projected_speed = target_vel_x * cos_f + target_vel_y * sin_f;
+        if (dynamic_tangent_yaw) {
+          // Wheeltec-style orbit feed-forward: during turns, drive along the
+          // target slot tangent and let yaw/lateral feedback trim the path.
+          // Using abs(projected) avoids commanding reverse just because the
+          // follower is still rotating toward the tangent direction.
+          vx_ff = orbit_v_gain_ * std::fabs(projected_speed);
+        } else {
+          vx_ff = orbit_v_gain_ * projected_speed;
+        }
       }
 
       vx = vx_ff + k_v_ * forward_err;
@@ -686,7 +772,7 @@ private:
       ROS_INFO_THROTTLE(debug_period_,
           "[FOLLOW_DBG] mode=%s form=%u assigned=%d offset(x=%.3f,y=%.3f,yaw=%.3f) leader(x=%.3f,y=%.3f,yaw=%.3f,vx=%.3f,wz=%.3f) follower(x=%.3f,y=%.3f,yaw=%.3f) target(final_x=%.3f,final_y=%.3f,raw_x=%.3f,raw_y=%.3f,raw_yaw=%.3f,x=%.3f,y=%.3f,yaw=%.3f,detour=%d) err(fwd=%.3f,lat=%.3f,yaw=%.3f,dist=%.3f,heading=%.3f,weight=%.3f) cmd_raw(vx=%.3f,wz=%.3f) cmd_out(vx=%.3f,wz=%.3f)",
           control_mode_.c_str(), latest_leader_cmd_.formation,
-          assigned_goal_fresh ? 1 : 0,
+          assigned_goal_active ? 1 : 0,
           active_offset_x, active_offset_y, active_offset_yaw,
           leader.x, leader.y, leader.yaw, leader_vx, leader_wz,
           follower.x, follower.y, follower.yaw,
@@ -861,6 +947,7 @@ private:
   double circle_show_radius_;
   bool use_assigned_goal_;
   double assigned_goal_timeout_;
+  double circle_assigned_goal_hold_timeout_;
   double offset_x_;
   double offset_y_;
   double loop_rate_;
@@ -879,6 +966,14 @@ private:
   double leader_vx_gain_;
   double leader_wz_gain_;
   double orbit_v_gain_;
+  bool circle_sync_enabled_;
+  double circle_sync_v_gain_;
+  double circle_sync_w_gain_;
+  double circle_sync_forward_gain_;
+  double circle_sync_lateral_gain_;
+  double circle_sync_yaw_gain_;
+  double circle_sync_max_v_correction_;
+  double circle_sync_max_w_correction_;
   double target_filter_alpha_;
   double cmd_filter_alpha_;
   double near_target_speed_gain_;
@@ -895,6 +990,8 @@ private:
   double max_turn_linear_speed_;
   double yaw_priority_vx_scale_;
   bool turn_radius_compensation_;
+  bool dynamic_tangent_yaw_enabled_;
+  double dynamic_tangent_min_speed_;
   bool allow_reverse_while_leader_forward_;
   bool allow_orbit_reverse_;
   bool debug_enabled_;
